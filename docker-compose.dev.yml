@@ -1,0 +1,61 @@
+# ===========================================================================
+# Capa de DESARROLLO. Se aplica SOLO cuando se pide explicitamente:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# (alias en el package.json: `npm run dev`)
+#
+# No se llama `docker-compose.override.yml` a proposito: compose cargaria ese
+# fichero automaticamente y el modo desarrollo se activaria siempre.
+#
+# Cambia dos cosas y solo dos:
+#   - la API se ejecuta con tsx (recarga al guardar, sin compilar)
+#   - el frontend se sirve con el servidor de Vite (HMR) en vez de nginx
+# Caddy es el mismo, con la CSP relajada para que funcione HMR.
+# ===========================================================================
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: dev
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug
+    command: ["npm", "run", "dev", "--workspace", "@securekey/api"]
+    # tsx escribe en node_modules/.cache, asi que aqui no aplicamos
+    # read_only; el resto de endurecimiento del servicio base se mantiene.
+    read_only: false
+    volumes:
+      # Fuentes en caliente desde el host, sin recompilar la imagen.
+      - ./apps/api:/app/apps/api
+      - ./packages:/app/packages
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: dev
+    command: ["npm", "run", "dev", "--workspace", "@securekey/web"]
+    read_only: false
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    volumes:
+      - ./infra/caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config

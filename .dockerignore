@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/build
+**/coverage
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.log
+docs
+README.md
+caddy-root.crt
+caddy-root.key
+.vscode
+.idea

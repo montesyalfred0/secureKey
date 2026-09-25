@@ -1,0 +1,38 @@
+{
+  "name": "securekey",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SecureKey - gestor de contrasenas con cifrado zero-knowledge en el navegador",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "npm run build --workspace @securekey/shared && npm run build --workspace @securekey/api && npm run build:only --workspace @securekey/web",
+    "typecheck": "npm run typecheck --workspace @securekey/api && npm run typecheck --workspace @securekey/web",
+    "test:unit": "npm run test:unit --workspace @securekey/api && npm run test --workspace @securekey/web",
+    "test:integration": "npm run test:integration --workspace @securekey/api",
+    "test:api": "npm run test --workspace @securekey/api",
+    "test:web": "npm run test --workspace @securekey/web",
+
+    "test": "docker compose --profile test run --rm test",
+    "test:e2e": "docker run --rm --network securekey_edge -e API_URL=http://api:3000/api/v1 securekey/api-dev node apps/api/test/e2e.mjs",
+    "test:http": "docker run --rm --network container:securekey-caddy-1 -e NODE_TLS_REJECT_UNAUTHORIZED=0 -e APP_URL=https://localhost:8443 securekey/api-dev node apps/web/test/http-checks.mjs",
+    "verify": "npm run test && npm run test:e2e && npm run test:http",
+
+    "secrets": "docker run --rm -v .:/app -w /app node:22-alpine node scripts/gen-secrets.mjs",
+    "up": "docker compose up --build -d --wait",
+    "dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build",
+    "down": "docker compose down",
+    "fresh": "docker compose down -v --remove-orphans",
+    "logs": "docker compose logs -f api web caddy",
+    "ps": "docker compose ps",
+    "restart": "docker compose restart",
+    "trust": "docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt",
+    "size": "docker run --rm -v ./scripts/bundle-size.sh:/size.sh:ro securekey/web:latest sh /size.sh"
+  }
+}

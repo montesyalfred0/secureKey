@@ -1,0 +1,44 @@
+# ===========================================================================
+# Caddy en modo DESARROLLO.
+#
+# Unico cambio de fondo respecto a produccion: la CSP permite 'unsafe-inline'
+# para estilos, porque el cliente de HMR de Vite inyecta <style> en la pagina.
+# En produccion la CSP estricta es la de infra/caddy/Caddyfile.
+# ===========================================================================
+
+{
+	admin off
+	auto_https disable_redirects
+}
+
+https://localhost:8443 {
+	tls internal
+
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=0"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ws://localhost:8443 wss://localhost:8443; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+		-Server
+	}
+
+	handle /api/* {
+		reverse_proxy api:3000 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	# Vite con HMR: proxy transparente y soporte de WebSocket.
+	handle {
+		reverse_proxy web:5173 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	log {
+		output discard
+	}
+}

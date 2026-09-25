@@ -1,0 +1,63 @@
+# ===========================================================================
+# Caddy como unico punto de entrada.
+#
+# - TLS con CA interna (`tls internal`): la app se sirve por https y asi
+#   `crypto.subtle` existe (contexto seguro) sin excepciones ni certificados
+#   comprados.
+# - Cabeceras de seguridad, incluida una CSP sin 'unsafe-inline'.
+# - /api va a la API y el resto al frontend. Un solo origen: sin CORS.
+# ===========================================================================
+
+{
+	admin off
+	# Sin persistencia de la config en disco: el contenedor es efimero.
+	auto_https disable_redirects
+}
+
+https://localhost:8443 {
+	tls internal
+
+	encode zstd gzip
+
+	# ---------------------------------------------------------------------
+	# Cabeceras
+	# ---------------------------------------------------------------------
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+
+		# Sin 'unsafe-inline' ni 'unsafe-eval'. El bundle de Vite es un
+		# fichero externo y no evalua nada, asi que se puede ser estricto.
+		# Si alguien rompe la app por esto, la causa real es un XSS.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' ws://localhost:8443 wss://localhost:8443; form-action 'none'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; manifest-src 'self'"
+
+		-Server
+	}
+
+	# ---------------------------------------------------------------------
+	# API: nunca servida desde disco, siempre reenviada.
+	# ---------------------------------------------------------------------
+	handle /api/* {
+		reverse_proxy api:3000 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	# ---------------------------------------------------------------------
+	# Frontend
+	# ---------------------------------------------------------------------
+	handle {
+		reverse_proxy web:80 {
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	log {
+		output discard
+	}
+}

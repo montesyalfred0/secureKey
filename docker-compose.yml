@@ -1,0 +1,280 @@
+services:
+  # ===========================================================================
+  # Base de datos
+  # ===========================================================================
+  # Vive en la red `backend` (internal: true), por lo que NO es alcanzable
+  # desde el host ni desde Internet: solo la API puede hablar con ella.
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-securekey}
+      POSTGRES_USER: ${POSTGRES_USER:-securekey}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?falta POSTGRES_PASSWORD en .env - ejecuta npm run secrets}"
+      # scram-sha-256 en vez de md5, que sigue activo por compatibilidad.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "${POSTGRES_USER:-securekey}" -d "${POSTGRES_DB:-securekey}"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+  # ===========================================================================
+  # Migraciones: servicio one-shot. La API no arranca hasta que termina bien.
+  # ===========================================================================
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    image: securekey/api:latest
+    command: ["node", "apps/api/dist/db/migrate.js"]
+    environment: &api_env
+      NODE_ENV: production
+      APP_ORIGIN: ${APP_ORIGIN:-https://localhost:8443}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://localhost:8443}
+      DATABASE_URL: postgres://${POSTGRES_USER:-securekey}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-securekey}
+      AUTH_PEPPER: "${AUTH_PEPPER:?falta AUTH_PEPPER en .env - ejecuta npm run secrets}"
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+      ARGON2_MEMORY_KIB: ${ARGON2_MEMORY_KIB:-19456}
+      ARGON2_ITERATIONS: ${ARGON2_ITERATIONS:-2}
+      ARGON2_PARALLELISM: ${ARGON2_PARALLELISM:-1}
+      ARGON2_KDF_VERSION: ${ARGON2_KDF_VERSION:-1}
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-open}
+      INVITE_SECRET: ${INVITE_SECRET:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      VERSION: ${VERSION:-0.1.0}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+
+  # ===========================================================================
+  # API
+  # ===========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    image: securekey/api:latest
+    environment: *api_env
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - backend
+      - edge
+    restart: unless-stopped
+    # Contenedor endurecido: sin escritura, sin capacidades, sin privilegios.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    # El puerto NO se publica: solo Caddy alcanza la API.
+
+  # ===========================================================================
+  # Frontend compilado + nginx
+  # ===========================================================================
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: runtime
+    image: securekey/web:latest
+    # nginx oficial arranca como root para escuchar en :80 y luego baja a los
+    # workers. Aqui arranca YA como el usuario 101 (nginx) y con el rootfs en
+    # solo lectura: no puede hacer chown, y ademas los scripts del entrypoint
+    # solo lo intentan cuando detectan uid 0, asi que se saltan solos.
+    #
+    # El bind de :80 sigue funcionando porque Docker pone por defecto
+    # `net.ipv4.ip_unprivileged_port_start=0` dentro del contenedor.
+    #
+    # Resultado: menos privilegios que antes y, sobre todo, no dependemos de
+    # Capabilities opcionales para que el contenedor arranque.
+    user: "101:101"
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - edge
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      # mode=1777: directorios vacios en memoria y escribibles por el usuario
+      # del servicio. Sin mode, el tmpfs nace 0755 y nginx no puede escribir.
+      - /tmp:mode=1777
+      - /var/cache/nginx:mode=1777
+      - /run:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+
+  # ===========================================================================
+  # Caddy: unico puerto publicado (8443).
+  # ===========================================================================
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8443}:8443"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificados de la CA interna: en un volumen, no en el contenedor.
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      - web
+      - api
+    networks:
+      - edge
+    # El binario de la imagen oficial de Caddy viene con el file capability
+    # `cap_net_bind_service=ep`. Si esa capacidad no esta en el bounding set,
+    # `execve` devuelve EPERM y el contenedor entra en un bucle de reinicio con
+    # un desconcertante "exec /usr/bin/caddy: operation not permitted".
+    #
+    # Por eso aqui no vale un `cap_drop: ALL` a secas: hay que devolver esa
+    # capacidad, aunque Caddy escuche en 8443 y no la necesite para nada.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+
+  # ===========================================================================
+  # Base de datos SOLO para los tests.
+  #
+  # Separate de `db` a proposito: los tests vacian tablas y crean usuarios, y
+  # no tienen por qué contaminar tus datos de desarrollo. Sin volumen, asi que
+  # cada `docker compose --profile test` arranca de cero.
+  # ===========================================================================
+  test-db:
+    profiles: ["test"]
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: securekey_test
+      POSTGRES_USER: securekey
+      POSTGRES_PASSWORD: securekey_test_local
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U securekey -d securekey_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+  # ===========================================================================
+  # Tests: servicio one-shot bajo demanda.
+  #
+  #   npm test              -> typecheck de la monorepo + tests
+  #   npm test -- unit      -> solo los que no necesitan base de datos
+  #
+  # Tres bloques, en este orden:
+  #   1. typecheck de shared, api y web (incluidos los tests de la API)
+  #   2. tests unitarios del cliente y del servidor (sin base de datos)
+  #   3. tests de integracion de la API contra PostgreSQL de verdad
+  #
+  # El paso 3 es el unico que necesita base de datos: RLS, cookies httpOnly,
+  # doble envio de CSRF y optimistic locking no se pueden comprobar con dobles.
+  # ===========================================================================
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: dev
+    image: securekey/api-dev:latest
+    environment:
+      NODE_ENV: test
+      # `error` y no `fatal`: si la API registra un error inesperado durante
+      # las pruebas, quiero verlo en la salida y no tener que reproducirlo a
+      # mano. Los 4xx esperados no generan log.
+      LOG_LEVEL: error
+      DATABASE_URL: postgres://securekey:securekey_test_local@test-db:5432/securekey_test
+    # La cadena va escrita aqui y no como `npm run <script>` a proposito: el
+    # script `test` de la raiz ES este comando de Docker, asi que delegar en el
+    # arrancaria el contenedor dentro de si mismo para siempre.
+    command:
+      - sh
+      - -c
+      - >-
+        npm run build --workspace @securekey/shared &&
+        npm run typecheck &&
+        npm run test:api &&
+        npm run test:web
+    depends_on:
+      test-db:
+        condition: service_healthy
+    volumes:
+      # Fuentes desde el host: la imagen `dev` los lleva horneados, pero
+      # reconstruir en cada iteracion de un test cuesta mas que lo que tarda
+      # la prueba. read_only: false porque vitest escribe en node_modules/.vite.
+      - ./apps/api:/app/apps/api
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+    networks:
+      - backend
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+
+networks:
+  # `edge` conecta lo que el navegador ve; `backend` es interna y sin salida,
+  # de modo que ni la base de datos ni la API pueden alcanzar Internet.
+  edge: {}
+  backend:
+    internal: true
+
+volumes:
+  pgdata: {}
+  caddydata: {}
+  caddyconfig: {}

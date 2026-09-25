@@ -1,0 +1,34 @@
+# Dependencias
+node_modules/
+.pnpm-store/
+
+# Build
+dist/
+build/
+*.tsbuildinfo
+
+# Entorno y secretos  NUNCA commitear
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+caddy-root.crt
+caddy-root.key
+
+# Certificados de la CA interna de Caddy
+infra/caddy/data/
+infra/caddy/config/
+
+# Testing / cobertura
+coverage/
+.vitest/
+
+# Sistema operativo / editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
+npm-debug.log*
