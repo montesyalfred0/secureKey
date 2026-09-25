@@ -4,6 +4,12 @@
 # Unico cambio de fondo respecto a produccion: la CSP permite 'unsafe-inline'
 # para estilos, porque el cliente de HMR de Vite inyecta <style> en la pagina.
 # En produccion la CSP estricta es la de infra/caddy/Caddyfile.
+#
+# OJO: 'unsafe-inline' NO es lo mismo que 'wasm-unsafe-eval'. El primero cubre
+# <script> embebido, el segundo cubre `WebAssembly.compile()`, y son
+# independientes. Por eso aqui tambien hace falta 'wasm-unsafe-eval': sin el,
+# HMR funciona pero el Argon2id del cliente sigue sin poder compilar y el
+# registro falla con un error de CSP que parece de otra cosa.
 # ===========================================================================
 
 {
@@ -21,7 +27,7 @@ https://localhost:8443 {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"
 		X-Frame-Options "DENY"
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ws://localhost:8443 wss://localhost:8443; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ws://localhost:8443 wss://localhost:8443; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
 		-Server
 	}
 

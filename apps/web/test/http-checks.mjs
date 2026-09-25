@@ -37,11 +37,40 @@ console.log('\n2. Cabeceras de seguridad');
 const h = (name) => res.headers.get(name) ?? '';
 const csp = h('content-security-policy');
 
+/**
+ * Devuelve las fuentes de una directiva de la CSP como tokens exactos.
+ *
+ * Hace falta porque comparar con `includes` da falsos positivos: la cadena
+ * 'wasm-unsafe-eval' CONTIENE la subcadena 'unsafe-eval', asi que un
+ * `csp.includes('unsafe-eval')` no distingue "no hay eval" de "solo hay
+ * compilacion WASM", que es justo la distincion que importa.
+ */
+const sourcesOf = (directive) => {
+  const match = new RegExp(`${directive}\\s+([^;]+)`).exec(csp);
+  return match ? match[1].trim().split(/\s+/) : [];
+};
+const scriptSrc = sourcesOf('script-src');
+const styleSrc = sourcesOf('style-src');
+
 check('CSP presente', csp.length > 0);
-check('CSP sin unsafe-inline', !csp.includes('unsafe-inline'), csp);
-check('CSP sin unsafe-eval', !csp.includes('unsafe-eval'));
+check('CSP sin unsafe-inline en script-src', !scriptSrc.includes("'unsafe-inline'"), scriptSrc.join(' '));
+check('CSP sin unsafe-eval en script-src', !scriptSrc.includes("'unsafe-eval'"), scriptSrc.join(' '));
+check('CSP sin unsafe-inline en style-src', !styleSrc.includes("'unsafe-inline'"), styleSrc.join(' '));
+check('CSP sin blob: ni data: en script-src', !scriptSrc.includes('blob:') && !scriptSrc.includes('data:'), scriptSrc.join(' '));
+
+// El Argon2id del cliente viene en WebAssembly y `WebAssembly.compile()` lo
+// gobierna `script-src`. Sin 'wasm-unsafe-eval' el navegador rechaza el
+// modulo: la pantalla de registro falla con un error de CSP que no explica que
+// el problema es la derivacion de la clave maestra. Este check existe para que
+// endurecer la CSP no rompa la app otra vez sin que nadie se entere.
+check(
+  "script-src incluye 'wasm-unsafe-eval' (Argon2id es WASM)",
+  scriptSrc.includes("'wasm-unsafe-eval'"),
+  `script-src = ${scriptSrc.join(' ')}`,
+);
+
 check("CSP con default-src 'self'", csp.includes("default-src 'self'"));
-check("CSP con script-src 'self'", csp.includes("script-src 'self'"));
+check("CSP con script-src 'self'", scriptSrc.includes("'self'"));
 check("CSP con frame-ancestors 'none'", csp.includes("frame-ancestors 'none'"));
 check('CSP con object-src none', csp.includes("object-src 'none'"));
 check('X-Content-Type-Options: nosniff', h('x-content-type-options') === 'nosniff');
@@ -63,6 +92,45 @@ if (bundleMatch) {
   check('el bundle no incluye //# sourceMappingURL', !body.includes('sourceMappingURL'));
   check('el bundle contiene el modulo de criptografia', body.includes('argon2') || body.includes('Argon2'));
   check('el bundle NO contiene patrones de contrasena de ejemplo en claro', !/Str0ng!Pass/.test(body));
+
+  // El Argon2id va en un chunk aparte (`argon2-<hash>.js`) que se carga por
+  // import dinamico: no aparece en el HTML, lo referencia el entry. Asi que
+  // hay que recorrer el grafo de imports, no solo los <script> del documento.
+  const direct = [...html.matchAll(/<script[^>]+src="([^"]+\.js)"/g)].map((m) => m[1]);
+  const seen = new Set(direct);
+  const queue = [...direct];
+  const bodies = new Map();
+
+  while (queue.length > 0) {
+    const src = queue.shift();
+    if (src === undefined || bodies.has(src)) continue;
+    const text = await (await fetch(`${BASE}${src}`)).text();
+    bodies.set(src, text);
+    for (const [, imported] of text.matchAll(/["']\.\/([A-Za-z0-9_.-]+\.js)["']/g)) {
+      const next = `/assets/${imported}`;
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+
+  const todo = [...bodies.values()].join('\n');
+
+  check(
+    'el grafo de bundles incluye el chunk de Argon2id',
+    [...bodies.keys()].some((s) => /argon2-/.test(s)),
+    [...bodies.keys()].join(' '),
+  );
+  // El Argon2id viene en WebAssembly y `WebAssembly.compile()` lo gobierna la
+  // directiva `script-src` de la CSP. Si esto falla, la CSP se ha endurecido de
+  // mas y el registro deja de funcionar en el navegador: es el aviso temprano
+  // de un fallo que si no aparece como un error de CSP desconcertante.
+  check(
+    'los bundles traen el modulo WASM de Argon2id',
+    todo.includes('WebAssembly') || /\.wasm/.test(todo),
+    'sin WebAssembly.compile en ningun bundle',
+  );
 } else {
   check('se encuentra el bundle JS', false, 'sin script src');
 }

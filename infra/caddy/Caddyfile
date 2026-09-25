@@ -34,7 +34,17 @@ https://localhost:8443 {
 		# Sin 'unsafe-inline' ni 'unsafe-eval'. El bundle de Vite es un
 		# fichero externo y no evalua nada, asi que se puede ser estricto.
 		# Si alguien rompe la app por esto, la causa real es un XSS.
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' ws://localhost:8443 wss://localhost:8443; form-action 'none'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; manifest-src 'self'"
+		#
+		# PERO 'wasm-unsafe-eval' es obligatorio y no es una concession: el
+		# Argon2id del cliente (hash-wasm) viene compilado como WebAssembly, y
+		# `WebAssembly.compile()` lo gobierna la directiva `script-src`. Sin
+		# esta fuente, el navegador rechaza el modulo y NO SE PUEDE REGISTRAR
+		# NI INICIAR SESION: el error sale al derivada la clave maestra.
+		#
+		# Es mucho mas estrecho que 'unsafe-eval': solo habilita
+		# `WebAssembly.compile/instantiate`, no `eval()` ni `new Function()`. Un
+		# XSS sigue sin poder ejecutar JavaScript arbitrario.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self' ws://localhost:8443 wss://localhost:8443; form-action 'none'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; manifest-src 'self'"
 
 		-Server
 	}

@@ -93,6 +93,15 @@ pueda arreglar despues.
   mayoria, y la base de datos en una red interna sin salida a Internet.
 - CSP sin `unsafe-inline` ni `unsafe-eval`, HSTS, `no-referrer`, y las cabeceras
   de limite de tasa. Un test falla si alguien relaja la CSP.
+- La CSP incluye `'wasm-unsafe-eval'` y es **imprescindible**: el Argon2id viene
+  compilado como WebAssembly, y `WebAssembly.compile()` lo gobierna la directiva
+  `script-src`. Sin esa fuente el navegador rechaza el modulo y no se puede
+  registrar ni iniciar sesion, con un error que no apunta a la derivacion de la
+  clave. Es una concesion mucho mas estrecha que `unsafe-eval`: solo habilita
+  `WebAssembly.compile/instantiate`, no `eval()` ni `new Function()`, asi que un
+  XSS sigue sin poder ejecutar JavaScript arbitrario. Ojo tambien en desarrollo:
+  `'unsafe-inline'` cubre `<script>` embebido pero **no** compila WASM, de modo
+  que `Caddyfile.dev` necesita la misma fuente.
 - Analisis de contrasenas 100 % local. No se consulta Have I Been Pwned ni nada
   externo: enviar la contrasena a un tercero seria el fallo mas grave posible
   aqui.
