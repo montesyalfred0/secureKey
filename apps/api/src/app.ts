@@ -30,6 +30,13 @@ export async function buildApp(config: Config): Promise<FastifyInstance> {
     // el rate limiting seria inutil.
     trustProxy: true,
     bodyLimit: 256 * 1024,
+    // En produccion se apagan las lineas de log por peticion: con el rate limit
+    // global activo, un atacante genera cientos de entradas por minuto y el log
+    // se llena de ruido que tapa los errores de verdad.
+    //
+    // Fastify 5 avisa (FSTDEP023) de que esto se va a `logController`, pero esa
+    // propiedad NO existe todavia en 5.12.5 en runtime: comprobado. Se deja la
+    // opcion de primer nivel y el aviso hasta que se actualice a fastify@6.
     disableRequestLogging: config.isProduction,
     ajv: { customOptions: { removeAdditional: false, coerceTypes: false } },
   });
