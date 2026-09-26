@@ -11,6 +11,16 @@ import { Alert, Button, Field, Spinner } from './ui.js';
 import { cryptoAvailable } from '../lib/crypto.js';
 import { SecureKeyError, type SecureKeyStore } from '../state/session.js';
 
+/**
+ * Esta instancia es una demo publica: cualquiera puede crear su cuenta.
+ *
+ * Ponerlo a `false`, o borrar el aviso entero, en cuanto se despliegue en
+ * serio. El aviso no es decorativo: en una demo abierta alguien va a meter su
+ * contrasena real del banco por costumbre, y quedaria guardada en el servidor
+ * de otra persona. Sin 2FA, quien entre despues lo lee.
+ */
+const ES_DEMO_PUBLICA = true;
+
 function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div class={['brand', compact ? 'brand--compact' : ''].filter(Boolean).join(' ')}>
@@ -120,6 +130,12 @@ export function AuthScreen({ store }: { store: SecureKeyStore }) {
           indescifrables: ni sus administradores ni un robo de la base de datos pueden leer lo que
           guardas.
         </p>
+        {ES_DEMO_PUBLICA && (
+          <p class="auth__lead">
+            <strong>Demo publica.</strong> El registro esta abierto para que puedas probarlo.
+            Usa contrasenas falsas: los datos que guardes se quedan en este servidor.
+          </p>
+        )}
         <TrustPanel />
       </section>
 
@@ -140,6 +156,14 @@ export function AuthScreen({ store }: { store: SecureKeyStore }) {
             <Alert tone="danger" title="Contexto no seguro">
               Tu navegador no expone WebCrypto fuera de HTTPS o <code>localhost</code>. Abre la
               aplicacion mediante <code>https://localhost:8443</code>.
+            </Alert>
+          )}
+
+          {ES_DEMO_PUBLICA && (
+            <Alert tone="warn" title="Demo publica: no guardes contrasenas reales">
+              Puedes crear tu cuenta libremente, pero esto corre en el servidor de otra persona
+              y no tiene segundo factor. Usa contrasenas inventadas. Si esto no fuera una demo,
+              el registro estaria cerrado con codigo de invitacion.
             </Alert>
           )}
 
