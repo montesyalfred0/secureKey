@@ -14,10 +14,18 @@ import { SecureKeyError, type SecureKeyStore } from '../state/session.js';
 /**
  * Esta instancia es una demo publica: cualquiera puede crear su cuenta.
  *
- * Ponerlo a `false`, o borrar el aviso entero, en cuanto se despliegue en
- * serio. El aviso no es decorativo: en una demo abierta alguien va a meter su
- * contrasena real del banco por costumbre, y quedaria guardada en el servidor
- * de otra persona. Sin 2FA, quien entre despues lo lee.
+ * Ponerlo a `false`, o borrar los avisos enteros, en cuanto se despliegue en
+ * serio. Entonces convendria ademas volver a `REGISTRATION_MODE=invite` en el
+ * `.env`.
+ *
+ * El aviso NO dice "no guardes contrasenas porque este servidor las puede
+ * leer", porque no puede: solo recibe texto cifrado y la derivada de la clave
+ * maestra. Eso es lo que hace que la app sirva de algo, asi que el aviso
+ * conviene que lo diga.
+ *
+ * Lo que si es cierto, y por lo que avisa, es que esto es temporal. Alguien que
+ * guarde aqui su contrasena del correo y luego la demo desaparezca ha perdido
+ * algo de lo que dependia. Ahi no hay cifrado que lo arregle.
  */
 const ES_DEMO_PUBLICA = true;
 
@@ -132,8 +140,9 @@ export function AuthScreen({ store }: { store: SecureKeyStore }) {
         </p>
         {ES_DEMO_PUBLICA && (
           <p class="auth__lead">
-            <strong>Demo publica.</strong> El registro esta abierto para que puedas probarlo.
-            Usa contrasenas falsas: los datos que guardes se quedan en este servidor.
+            <strong>Demo publica.</strong> El registro esta abierto. Lo que guardes llega cifrado y
+            el servidor no puede leerlo, pero esta demo puede desaparecer: no guardes nada de lo
+            que necesites.
           </p>
         )}
         <TrustPanel />
@@ -160,10 +169,10 @@ export function AuthScreen({ store }: { store: SecureKeyStore }) {
           )}
 
           {ES_DEMO_PUBLICA && (
-            <Alert tone="warn" title="Demo publica: no guardes contrasenas reales">
-              Puedes crear tu cuenta libremente, pero esto corre en el servidor de otra persona
-              y no tiene segundo factor. Usa contrasenas inventadas. Si esto no fuera una demo,
-              el registro estaria cerrado con codigo de invitacion.
+            <Alert tone="warn" title="Demo publica: no guardes nada que necesites">
+              Puedes crear tu cuenta y guardar lo que quieras: el servidor solo recibe texto
+              cifrado que no puede leer. Pero esto es una demo y puede desaparecer en cualquier
+              momento, asi que no guardes nada de lo que dependas.
             </Alert>
           )}
 
