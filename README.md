@@ -295,23 +295,46 @@ npm run test:e2e                              # 35 checks del protocolo
 **Backups**
 
 ```bash
-npm run backup                 # vuelca y verifica integridad
-BACKUP_DIR=/mnt/nas npm run backup
+npm run backup            # vuelca y verifica que NO esta vacio
+npm run backup:cron       # instala el backup automatico (cron del host)
+npm run backup:verify     # comprueba que el ultimo backup SE RESTAURA
 npm run restore backups/securekey-<fecha>.dump
 ```
 
-`restore.sh` levanta un PostgreSQL aislado, restaura ahi y comprueba que la base
-resultante tiene las 4 tablas, la **RLS activa en las 4** y el rol `securekey_app`
-—que sin el, las politicas no se aplicarian. Solo cuando todo cuadra imprime
-como aplicarlo sobre la base real. Nunca restaura encima de la de produccion sin
-confirmacion: el volcado sobrescribe tablas enteras y no hay deshacer.
+Un backup del que nadie ha restaurado no es un backup, es una esperanza.
+`backup-verify.sh` levanta un PostgreSQL **aislado**, restaura ahi y comprueba que
+la base resultante tiene las 4 tablas, la **RLS activa en las 4** y el rol
+`securekey_app` —sin el, las politicas no se aplicarian—. La base real no se toca.
 
-Es **seguro almacenar** el volcado: `items` solo contiene blobs AEAD. Lo que si
-es sensible son los correos, los `auth_hash` y las IPs del `audit_log`. Si el
-destino no es de fiar, cifralo con `age` antes de subirlo.
+Dos detalles que no son evidentes:
 
-Conviene un backup **diario y automatico** (cron o systemd timer). Uno que solo se
-lanza a mano es un backup que no existe el dia que hace falta.
+- **El volcado no puede estar vacio.** `pg_dump` con el rol de la API falla con
+  "permission denied" al pedir `LOCK TABLE`, pero en modo `--data-only` sale con
+  codigo 0 y **cero filas**, porque la RLS simplemente no le muestra nada.
+  `backup.sh` comprueba que el volcado TIENE datos, no solo que se ha escrito: un
+  backup vacio que parece correcto es peor que no tener backup, porque solo se
+  descubre el dia que hay que restaurar.
+- **Cron no tiene entorno.** La linea instalada lleva `cd` al proyecto y el
+  script lee el `.env`; un `npm run backup` a pelo fallaria con
+  "POSTGRES_PASSWORD no encontrado".
+
+**Aviso importante sobre donde esta el backup.** Si guardas las copias en la
+misma VPS, no te protegen de lo mas probable: si muere el disco, el backup muere
+con el. En `./backups` solo te cubren de errores humanos (un `docker compose down
+-v` sin querer, una migracion a medias). Contra fallo de hardware hace falta
+sacarlas fuera:
+
+```bash
+BACKUP_DIR=/mnt/nas scripts/backup.sh
+# o subirlas a otro servidor, cifradas:
+age -r <tu-clave> -o backup.dump.age securekey-<fecha>.dump
+```
+
+Es **seguro de mover**: `items` solo contiene blobs AEAD. Lo que si es sensible
+son los correos, los `auth_hash` y las IPs del `audit_log`.
+
+Conviene un **diario y automatico** (lo instala `npm run backup:cron`). Uno que
+solo se lanza a mano es un backup que no existe el dia que hace falta.
 
 ### Si hay un proxy o balanceador delante de Caddy
 

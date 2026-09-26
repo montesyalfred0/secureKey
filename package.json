@@ -26,6 +26,8 @@
     "secrets": "docker run --rm -v .:/app -w /app node:22-alpine node scripts/gen-secrets.mjs",
     "invite": "docker compose run --rm --no-deps -T api node apps/api/dist/scripts/invite.js",
     "backup": "bash scripts/backup.sh",
+    "backup:verify": "bash scripts/backup-verify.sh",
+    "backup:cron": "bash scripts/install-cron.sh",
     "restore": "bash scripts/restore.sh",
     "prune": "docker compose run --rm --no-deps -T prune node apps/api/dist/db/prune-audit.js",
     "up": "docker compose up --build -d --wait",
