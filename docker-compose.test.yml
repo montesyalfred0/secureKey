@@ -58,7 +58,16 @@ services:
       # las pruebas, quiero verlo en la salida y no tener que reproducirlo a
       # mano. Los 4xx esperados no generan log.
       LOG_LEVEL: error
-      DATABASE_URL: postgres://securekey:securekey_test_local@test-db:5432/securekey_test
+      # Dos canales, igual que en produccion:
+      #   - DATABASE_URL      rol RESTRINGIDO, con el que entra la app bajo
+      #                       prueba. Los tests usan el mismo camino de codigo
+      #                       que produccion, asi que detectan cualquier
+      #                       consulta que dependa de privilegios de superusuario.
+      #   - DATABASE_ADMIN_URL superusuario, solo para migrar y para el
+      #                       TRUNCATE entre tests (que es DDL).
+      DATABASE_URL: postgres://securekey_api:securekey_test_app@test-db:5432/securekey_test
+      DATABASE_APP_PASSWORD: securekey_test_app
+      DATABASE_ADMIN_URL: postgres://securekey:securekey_test_local@test-db:5432/securekey_test
     # La cadena va escrita aqui y no como `npm run <script>` a proposito: el
     # script `test` de la raiz ES este comando de Docker, asi que delegar en el
     # arrancaria el contenedor dentro de si mismo para siempre.

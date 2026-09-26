@@ -3,7 +3,8 @@
  * y disponibles tanto en `tsx` (desarrollo) como en `dist` (produccion).
  */
 import type { Config } from '../config.js';
-import { withSystem } from './withUser.js';
+import { withSystemAdmin } from './withUser.js';
+import { createPool } from './pool.js';
 
 export type Migration = {
   id: string;
@@ -378,15 +379,216 @@ $fn$;
 REVOKE ALL ON FUNCTION audit_prune(integer, bigint) FROM PUBLIC;
 `;
 
+/**
+ * 004 - Escrituras de `users` como funciones SECURITY DEFINER.
+ *
+ * El objetivo es que la API pueda dejar de conectar como superusuario.
+ *
+ * El problema: el flujo de autenticacion necesita escribir en `users` ANTES de
+ * que exista una sesion y, por tanto, antes de que `app.user_id` este
+ * publicado. Bajo la RLS, `app_user_id()` devuelve NULL y el `WITH CHECK` de
+ * `users` rechaza la escritura. Por eso esas escrituras iban directas, desde
+ * el rol de la migracion, que es superusuario y se salta la RLS.
+ *
+ * Eso dejaba al superusuario como requisito de funcionamiento: un RCE en la
+ * API significaba superusuario en la base, con capacidad de leer ficheros del
+ * host (`pg_read_file`) o ejecutar comandos (`COPY ... TO PROGRAM`).
+ *
+ * La solucion es la misma que ya usaban las lecturas: mover cada escritura a
+ * una funcion `SECURITY DEFINER` acotada a lo que hace falta, con
+ * `search_path` fijo y `EXECUTE` revocado a `PUBLIC`. La API entra con un rol
+ * sin privilegios, y la superficie de superusuario queda reducida a un puñado
+ * de funciones revisadas.
+ */
+const userWritesSql = String.raw`
+-- Alta de cuenta. Devuelve el id, o NULL si el correo ya existe (23505), que
+-- es lo que el registro traduce a un 409.
+CREATE OR REPLACE FUNCTION auth_create_user(
+  p_email    citext,
+  p_hash     bytea,
+  p_salt     bytea,
+  p_vault    bytea,
+  p_nonce    bytea,
+  p_kdf      jsonb
+)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+DECLARE
+  v_id uuid;
+BEGIN
+  INSERT INTO users (email, auth_hash, auth_salt, vault_cipher, vault_nonce, key_version, kdf)
+  VALUES (p_email, p_hash, p_salt, p_vault, p_nonce, 1, p_kdf)
+  RETURNING id INTO v_id;
+
+  RETURN v_id;
+EXCEPTION
+  -- Chave primaria violada: el correo ya esta registrado. Se devuelve NULL en
+  -- vez de propagar el error para que el registro responda 409.
+  WHEN unique_violation THEN
+    RETURN NULL;
+END
+$fn$;
+
+-- Actualiza el perfil de KDF cuando el servidor sube parametros. Deliberadamente
+-- NO toca la columna key_version: esa es la generacion de la clave de boveda y va
+-- en el AAD de cada item.
+CREATE OR REPLACE FUNCTION auth_update_user_kdf(p_id uuid, p_kdf jsonb)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+BEGIN
+  UPDATE users SET kdf = p_kdf, updated_at = now() WHERE id = p_id;
+  RETURN FOUND;
+END
+$fn$;
+
+-- Re-envuelve la clave de boveda (rekey y KDF). La columna key_version NO se
+-- incrementa: es la generacion de la vaultKey y va en el AAD de cada item.
+CREATE OR REPLACE FUNCTION auth_update_user_vault(
+  p_id     uuid,
+  p_vault  bytea,
+  p_nonce  bytea,
+  p_kdf    jsonb
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+BEGIN
+  UPDATE users
+     SET vault_cipher = p_vault, vault_nonce = p_nonce, kdf = p_kdf, updated_at = now()
+   WHERE id = p_id;
+  RETURN FOUND;
+END
+$fn$;
+
+-- Cambio de contrasena maestra: nuevo verificador, nueva sal, nueva envoltura
+-- y reinicio del contador de fallos.
+CREATE OR REPLACE FUNCTION auth_update_user_credentials(
+  p_id     uuid,
+  p_hash   bytea,
+  p_salt   bytea,
+  p_vault  bytea,
+  p_nonce  bytea,
+  p_kdf    jsonb
+)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+BEGIN
+  UPDATE users
+     SET auth_hash = p_hash, auth_salt = p_salt,
+         vault_cipher = p_vault, vault_nonce = p_nonce, kdf = p_kdf,
+         failed_logins = 0, locked_until = NULL, updated_at = now()
+   WHERE id = p_id;
+  RETURN FOUND;
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION auth_create_user(citext, bytea, bytea, bytea, bytea, jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION auth_update_user_kdf(uuid, jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION auth_update_user_vault(uuid, bytea, bytea, jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION auth_update_user_credentials(uuid, bytea, bytea, bytea, bytea, jsonb) FROM PUBLIC;
+
+-- Se conceden a securekey_app, no al rol de la API. Asi el acceso depende de
+-- la pertenencia al rol, y revocar a la API es una sola sentencia.
+GRANT EXECUTE ON FUNCTION auth_create_user(citext, bytea, bytea, bytea, bytea, jsonb) TO securekey_app;
+GRANT EXECUTE ON FUNCTION auth_update_user_kdf(uuid, jsonb) TO securekey_app;
+GRANT EXECUTE ON FUNCTION auth_update_user_vault(uuid, bytea, bytea, jsonb) TO securekey_app;
+GRANT EXECUTE ON FUNCTION auth_update_user_credentials(uuid, bytea, bytea, bytea, bytea, jsonb) TO securekey_app;
+
+-- Fija la contrasena del rol de la API.
+--
+-- Existe como funcion y no como "ALTER ROLE ... PASSWORD $1" porque Postgres no
+-- admite parametros en sentencias de utilidad: da "syntax error at or near $1".
+-- El %L de format() hace el escapado por la propia base de datos, asi que la
+-- contrasena se trata como un literal y no se concatena en ningun sitio.
+CREATE OR REPLACE FUNCTION admin_set_app_password(p_password text)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+BEGIN
+  EXECUTE format('ALTER ROLE securekey_api PASSWORD %L', p_password);
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION admin_set_app_password(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION admin_set_app_password(text) TO CURRENT_USER;
+`;
+
 // El orden importa: se declara DESPUES de los tres bloques de SQL.
 export const MIGRATIONS: readonly Migration[] = [
   { id: '001_init', sql: initSql },
   { id: '002_audit_retention', sql: auditRetentionSql },
   { id: '003_audit_prune_fix', sql: auditPruneV2Sql },
+  { id: '004_user_writes', sql: userWritesSql },
 ];
 
+/**
+ * Rol con el que entra la aplicacion. NO es superusuario.
+ *
+ * Se crea aqui y no en el SQL de una migracion porque necesita contrasena, y el
+ * SQL de las migraciones es estatico: la contrasena llega por parametro desde
+ * `migrate.ts`. Es idempotente, asi que se puede volver a ejecutar para rotar
+ * la contrasena sin tocar el esquema.
+ *
+ * Lo que se gana, y que se midio: con el rol anterior (superusuario) un RCE en
+ * la API permitia `pg_read_file` sobre el host y `COPY ... TO PROGRAM` para
+ * ejecutar comandos. Con este rol, ninguna de las dos cosas existe.
+ *
+ * Lo que NO se gana: este rol es miembro de `securekey_app`, asi que sigue
+ * viendo lo que el contexto de la transaccion permita. Lo que se pierde con el
+ * RCE es el salto directo a superusuario.
+ */
+export async function ensureApiRole(
+  databaseUrl: string,
+  password: string,
+): Promise<{ created: boolean }> {
+  const pool = createPool(databaseUrl);
+  try {
+    const existing = await pool.query<{ n: string }>(
+      "SELECT count(*) AS n FROM pg_roles WHERE rolname = 'securekey_api'",
+    );
+
+    if (Number(existing.rows[0]?.n ?? 0) === 0) {
+      // NOINHERIT seria mas estricto todavia (habria que hacer SET ROLE
+      // siempre, que es justo lo que ya hace `withUser`), pero el propio
+      // `withSystem` necesita los privilegios heredados de `securekey_app`.
+      await pool.query(`
+        CREATE ROLE securekey_api
+          LOGIN
+          NOSUPERUSER
+          NOCREATEDB
+          NOCREATEROLE
+          NOBYPASSRLS
+          NOREPLICATION
+      `);
+    }
+
+    // Parametrizado de verdad: la contrasena viaja como parametro y la
+    // concatenacion la hace la base de datos con `format`/`%L`, no el
+    // aplicativo. Ver `admin_set_app_password` en la migracion 004.
+    await pool.query('SELECT admin_set_app_password($1)', [password]);
+    await pool.query('GRANT securekey_app TO securekey_api');
+
+    return { created: Number(existing.rows[0]?.n ?? 0) === 0 };
+  } finally {
+    await pool.end();
+  }
+}
+
 export async function runMigrations(config: Config): Promise<MigrationResult[]> {
-  return withSystem(config, async (tx) => {
+  return withSystemAdmin(config, async (tx) => {
     await tx.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         id         text        PRIMARY KEY,

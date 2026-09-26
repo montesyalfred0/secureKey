@@ -11,8 +11,7 @@
  * justo cuando la necesitas.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { closeDatabase, createTestApp } from '../helpers.js';
-import { withSystem } from '../../src/db/withUser.js';
+import { closeDatabase, createTestApp, withAdmin } from '../helpers.js';
 import type { Config } from '../../src/config.js';
 
 let config: Config;
@@ -28,14 +27,14 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await withSystem(config, async (tx) => {
+  await withAdmin(config, async (tx) => {
     await tx.query('TRUNCATE users, items, sessions, audit_log RESTART IDENTITY CASCADE');
   });
 });
 
 /** Inserta `n` filas con la antiguedad indicada (en dias). */
 async function fillAudit(n: number, ageDays: number, action = 'test'): Promise<void> {
-  await withSystem(config, async (tx) => {
+  await withAdmin(config, async (tx) => {
     await tx.query(
       `INSERT INTO audit_log (user_id, action, at)
        SELECT NULL, $1, now() - make_interval(days => $2)
@@ -46,7 +45,7 @@ async function fillAudit(n: number, ageDays: number, action = 'test'): Promise<v
 }
 
 const count = async (): Promise<number> => {
-  const rows = await withSystem(config, async (tx) => {
+  const rows = await withAdmin(config, async (tx) => {
     const res = await tx.query<{ n: string }>('SELECT count(*) AS n FROM audit_log');
     return res.rows;
   });
@@ -54,7 +53,7 @@ const count = async (): Promise<number> => {
 };
 
 const prune = async (keepDays: number, maxRows: number): Promise<number> => {
-  const rows = await withSystem(config, async (tx) => {
+  const rows = await withAdmin(config, async (tx) => {
     const res = await tx.query<{ audit_prune: string }>(
       'SELECT audit_prune($1::integer, $2::bigint) AS audit_prune',
       [keepDays, maxRows],
@@ -165,7 +164,7 @@ describe('robustez', () => {
   });
 
   it('no toca las tablas de datos', async () => {
-    await withSystem(config, async (tx) => {
+    await withAdmin(config, async (tx) => {
       await tx.query(
         `INSERT INTO users (email, auth_hash, auth_salt, vault_cipher, vault_nonce, kdf)
          VALUES ('prune@x.test', '\x01', '\x01', '\x01', '\x01', '{"alg":"argon2id","m":19456,"t":2,"p":1,"version":1}')`,
@@ -175,7 +174,7 @@ describe('robustez', () => {
     await prune(0, 500_000);
 
     expect(await count()).toBe(0);
-    const usuarios = await withSystem(config, async (tx) => {
+    const usuarios = await withAdmin(config, async (tx) => {
       const res = await tx.query<{ n: string }>('SELECT count(*) AS n FROM users');
       return res.rows;
     });
@@ -188,7 +187,7 @@ describe('robustez', () => {
     // cutoff. Ese escenario no puede llegar a existir: la columna es NOT NULL.
     // Estos tests fijan esa garantia, que es la que hace segura la poda, y
     // hacen imposible el fallo sin tener que simularlo.
-    const info = await withSystem(config, async (tx) => {
+    const info = await withAdmin(config, async (tx) => {
       const res = await tx.query<{ nullable: string }>(
         `SELECT is_nullable AS nullable FROM information_schema.columns
           WHERE table_name = 'audit_log' AND column_name = 'at'`,
@@ -199,7 +198,7 @@ describe('robustez', () => {
 
     // El default de la columna es la garantia que importa: si se podria insertar
     // sin `at`, la fila tendria la fecha de ahora y jamas se podria podar.
-    const defecto = await withSystem(config, async (tx) => {
+    const defecto = await withAdmin(config, async (tx) => {
       const res = await tx.query<{ def: string | null }>(
         `SELECT column_default AS def FROM information_schema.columns
           WHERE table_name = 'audit_log' AND column_name = 'at'`,
@@ -224,7 +223,7 @@ describe('permisos de audit_prune', () => {
     // Se consulta `has_function_privilege` en vez de parsear `proacl`: el
     // formato ACL de Postgres es una lista con sintaxis propia
     // (`{=X/securekey,=X/otro}`) y compararla como texto es fragil.
-    const rows = await withSystem(config, async (tx) => {
+    const rows = await withAdmin(config, async (tx) => {
       const res = await tx.query<{ puede: boolean }>(
         `SELECT has_function_privilege('securekey_app', 'audit_prune(integer, bigint)', 'EXECUTE') AS puede`,
       );
@@ -234,7 +233,7 @@ describe('permisos de audit_prune', () => {
   });
 
   it('pero el rol propietario si', async () => {
-    const rows = await withSystem(config, async (tx) => {
+    const rows = await withAdmin(config, async (tx) => {
       const res = await tx.query<{ puede: boolean }>(
         `SELECT has_function_privilege(CURRENT_USER, 'audit_prune(integer, bigint)', 'EXECUTE') AS puede`,
       );
@@ -247,7 +246,7 @@ describe('permisos de audit_prune', () => {
     // Sin `SET search_path`, una funcion SECURITY DEFINER es explotable: el
     // atacante controla que `search_path` resuelva y puede ejecutar su propio
     // codigo como el propietario de la funcion.
-    const rows = await withSystem(config, async (tx) => {
+    const rows = await withAdmin(config, async (tx) => {
       const res = await tx.query<{ secdef: boolean; cfg: string[] | null }>(
         `SELECT prosecdef AS secdef, proconfig AS cfg
            FROM pg_proc WHERE proname = 'audit_prune' LIMIT 1`,

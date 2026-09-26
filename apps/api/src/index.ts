@@ -1,7 +1,7 @@
 /** Punto de entrada del proceso. */
 import { loadConfig } from './config.js';
 import { buildApp } from './app.js';
-import { closePool, getPool } from './db/pool.js';
+import { closeAllPools, getPool } from './db/pool.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -14,7 +14,7 @@ async function main(): Promise<void> {
     app.log.info({ signal }, 'apagando');
     try {
       await app.close();
-      await closePool();
+      await closeAllPools();
       process.exit(0);
     } catch (error) {
       app.log.error({ err: error }, 'error durante el apagado');

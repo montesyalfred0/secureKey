@@ -38,11 +38,18 @@ services:
       target: runtime
     image: securekey/api:latest
     command: ["node", "apps/api/dist/db/migrate.js"]
-    environment: &api_env
+    # OJO: las migraciones SI necesitan superusuario (CREATE ROLE, ALTER TABLE
+    # ... ENABLE ROW LEVEL SECURITY, CREATE EXTENSION). Por eso `migrate` NO
+    # comparte el ancla `&api_env` de la API: si lo hiciera, migrar con el rol
+    # restringido fallaria con un error de permisos bastante críptico.
+    environment: &admin_env
       NODE_ENV: production
       APP_ORIGIN: ${APP_ORIGIN:-https://localhost:8443}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://localhost:8443}
       DATABASE_URL: postgres://${POSTGRES_USER:-securekey}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-securekey}
+      # Necesaria para crear `securekey_api` y fijar su contrasena. No se usa
+      # para conectar: `migrate` entra con el rol de la linea anterior.
+      DATABASE_APP_PASSWORD: "${DATABASE_APP_PASSWORD:?falta DATABASE_APP_PASSWORD en el .env - ejecuta npm run secrets}"
       AUTH_PEPPER: "${AUTH_PEPPER:?falta AUTH_PEPPER en .env - ejecuta npm run secrets}"
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
@@ -80,7 +87,15 @@ services:
       dockerfile: apps/api/Dockerfile
       target: runtime
     image: securekey/api:latest
-    environment: *api_env
+    environment:
+      <<: *admin_env
+      # Sobrescribe la URL con el rol RESTRINGIDO. El resto del entorno (KDF,
+      # sesiones, registro...) se hereda del bloque de migraciones.
+      #
+      # Un RCE aqui ya no da superusuario: no puede leer ficheros del host ni
+      # ejecutar comandos, y la RLS de `items` es una barrera real y no un
+      # `SET LOCAL ROLE` de distancia.
+      DATABASE_URL: postgres://securekey_api:${DATABASE_APP_PASSWORD:?falta DATABASE_APP_PASSWORD en el .env - ejecuta npm run secrets}@db:5432/${POSTGRES_DB:-securekey}
     depends_on:
       db:
         condition: service_healthy
@@ -208,7 +223,11 @@ services:
     command: ["sh", "-c", "while true; do node apps/api/dist/db/prune-audit.js; sleep 21600; done"]
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgres://${POSTGRES_USER:-securekey}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-securekey}
+      # Mismo rol restringido que la API. El podador solo necesita ejecutar
+      # `audit_prune` (concedida a `securekey_app`), asi que no hay motivo para
+      # darle superusuario.
+      DATABASE_URL: postgres://securekey_api:${DATABASE_APP_PASSWORD:?falta DATABASE_APP_PASSWORD en el .env - ejecuta npm run secrets}@db:5432/${POSTGRES_DB:-securekey}
+      DATABASE_APP_PASSWORD: "${DATABASE_APP_PASSWORD:?falta DATABASE_APP_PASSWORD en el .env - ejecuta npm run secrets}"
       # Solo los que leen el entorno; el resto sale con sus defaults.
       AUDIT_KEEP_DAYS: ${AUDIT_KEEP_DAYS:-30}
       AUDIT_MAX_ROWS: ${AUDIT_MAX_ROWS:-500000}

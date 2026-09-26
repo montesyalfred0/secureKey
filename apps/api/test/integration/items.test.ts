@@ -22,8 +22,8 @@ import {
   testConfig,
   type TestAccount,
   type TestClient,
+  withAdmin,
 } from '../helpers.js';
-import { withSystem } from '../../src/db/withUser.js';
 
 const API = '/api/v1';
 
@@ -95,7 +95,7 @@ describe('POST /items', () => {
 
     await user.client.post(`${API}/items`, { id, blob });
 
-    const guardado = await withSystem(testConfig(), async (tx) => {
+    const guardado = await withAdmin(testConfig(), async (tx) => {
       const res = await tx.query<{ id: string; version: number; kdf: unknown; nonce: Buffer; ciphertext: Buffer }>(
         'SELECT id, version, kdf, nonce, ciphertext FROM items WHERE id = $1',
         [id],
@@ -116,7 +116,7 @@ describe('POST /items', () => {
     const user = await register();
     await createItem(user, { title: 'Secreto-Corporativo', password: 'P4ssw0rd-del-banco' });
 
-    const volcado = await withSystem(testConfig(), async (tx) => {
+    const volcado = await withAdmin(testConfig(), async (tx) => {
       const res = await tx.query<Record<string, unknown>>('SELECT * FROM items');
       return JSON.stringify(res.rows, (_k, v) => (v instanceof Buffer ? v.toString('utf8') : v));
     });
@@ -357,7 +357,7 @@ describe('DELETE /items/:id', () => {
 
     // Borrado logico y no fisico es lo que permite sincronizar borrados entre
     // dispositivos sin que una operacion concurrente lo "resucite".
-    const filas = await withSystem(testConfig(), async (tx) => {
+    const filas = await withAdmin(testConfig(), async (tx) => {
       const res = await tx.query<{ deleted_at: Date | null }>('SELECT deleted_at FROM items WHERE id = $1', [
         creado.id,
       ]);

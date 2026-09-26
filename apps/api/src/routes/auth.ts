@@ -59,6 +59,87 @@ function parse<S extends z.ZodTypeAny>(schema: S, request: FastifyRequest): z.in
   return result.data;
 }
 
+/**
+ * Alta de cuenta.
+ *
+ * Va por una funcion `SECURITY DEFINER` y no por un INSERT directo porque el
+ * registro ocurre antes de existir sesion: no hay `app.user_id` publicado, asi
+ * que la RLS rechazaria la escritura. La funcion la ejecuta el propietario y
+ * de paso convierte la violacion de clave unica en un NULL, que aqui se
+ * traduce a 409.
+ */
+async function createUser(
+  config: Config,
+  params: {
+    email: string;
+    authHash: Buffer;
+    salt: Buffer;
+    vaultCipher: Buffer;
+    vaultNonce: Buffer;
+    kdf: unknown;
+  },
+): Promise<string | undefined> {
+  return withSystem(config, async (tx) => {
+    const res = await tx.query<{ auth_create_user: string | null }>(
+      `SELECT auth_create_user($1, $2, $3, $4, $5, $6::jsonb) AS auth_create_user`,
+      [
+        params.email,
+        params.authHash,
+        params.salt,
+        params.vaultCipher,
+        params.vaultNonce,
+        JSON.stringify(params.kdf),
+      ],
+    );
+    return res.rows[0]?.auth_create_user ?? undefined;
+  });
+}
+
+/** Perfil de KDF vigente. No toca `key_version` (ver el comentario del rekey). */
+async function updateUserKdf(config: Config, userId: string, kdf: unknown): Promise<void> {
+  await withSystem(config, async (tx) => {
+    await tx.query('SELECT auth_update_user_kdf($1, $2::jsonb)', [userId, JSON.stringify(kdf)]);
+  });
+}
+
+/** Re-envuelve la vaultKey. `key_version` NO se incrementa. */
+async function updateUserVault(
+  config: Config,
+  userId: string,
+  vault: WrappedKey,
+  kdf: unknown,
+): Promise<void> {
+  await withSystem(config, async (tx) => {
+    await tx.query('SELECT auth_update_user_vault($1, $2, $3, $4::jsonb)', [
+      userId,
+      Buffer.from(vault.ciphertext, 'base64'),
+      Buffer.from(vault.nonce, 'base64'),
+      JSON.stringify(kdf),
+    ]);
+  });
+}
+
+/** Cambio de contrasena maestra: verificador, sal, envoltura y contadores. */
+async function updateUserCredentials(
+  config: Config,
+  userId: string,
+  params: { authHash: Buffer; salt: Buffer; vault: WrappedKey; kdf: unknown },
+): Promise<void> {
+  await withSystem(config, async (tx) => {
+    await tx.query(
+      `SELECT auth_update_user_credentials($1, $2, $3, $4, $5, $6::jsonb)`,
+      [
+        userId,
+        params.authHash,
+        params.salt,
+        Buffer.from(params.vault.ciphertext, 'base64'),
+        Buffer.from(params.vault.nonce, 'base64'),
+        JSON.stringify(params.kdf),
+      ],
+    );
+  });
+}
+
 /** Parametros KDF vigentes segun el estado de la fila o del servidor. */
 function kdfFrom(row: AuthUserRow | undefined, config: Config): KdfParams {
   if (!row) return config.kdf;
@@ -115,12 +196,7 @@ async function syncKdfVersion(
   const current = kdfFrom(user, config);
   const needsVaultRekey = clientKdfVersion !== current.version;
   if (needsVaultRekey) {
-    await withSystem(config, async (tx) => {
-      await tx.query('UPDATE users SET kdf = $2::jsonb, updated_at = now() WHERE id = $1', [
-        user.id,
-        JSON.stringify(current),
-      ]);
-    });
+    await updateUserKdf(config, user.id, current);
   }
   return { current, needsVaultRekey };
 }
@@ -181,35 +257,22 @@ export async function authRoutes(app: FastifyInstance, opts: { config: Config })
       const salt = generateSalt();
       const authHash = await hashAuthKey(config.authPepper, authKey, salt);
 
-      const inserted = await withSystem(config, async (tx) => {
-        try {
-          const res = await tx.query<{ id: string }>(
-            `INSERT INTO users (email, auth_hash, auth_salt, vault_cipher, vault_nonce, key_version, kdf)
-             VALUES ($1, $2, $3, $4, $5, 1, $6::jsonb)
-             RETURNING id`,
-            [
-              email,
-              authHash,
-              salt,
-              Buffer.from(vault.ciphertext, 'base64'),
-              Buffer.from(vault.nonce, 'base64'),
-              JSON.stringify(body.kdf),
-            ],
-          );
-          return res.rows[0];
-        } catch (error) {
-          if ((error as { code?: string }).code === '23505') return undefined;
-          throw error;
-        }
+      const userId = await createUser(config, {
+        email,
+        authHash,
+        salt,
+        vaultCipher: Buffer.from(vault.ciphertext, 'base64'),
+        vaultNonce: Buffer.from(vault.nonce, 'base64'),
+        kdf: body.kdf,
       });
 
-      if (!inserted) throw conflict('No se ha podido completar el registro');
+      if (userId === undefined) throw conflict('No se ha podido completar el registro');
 
-      await audit(config, { userId: inserted.id, action: 'auth.register', request });
-      await createSession(config, reply, inserted.id, request);
+      await audit(config, { userId, action: 'auth.register', request });
+      await createSession(config, reply, userId, request);
 
       return reply.code(201).send({
-        user: { id: inserted.id, email },
+        user: { id: userId, email },
         vault: toWrappedKey(Buffer.from(vault.ciphertext, 'base64'), Buffer.from(vault.nonce, 'base64')),
         needsVaultRekey: false,
         keyVersion: 1,
@@ -314,23 +377,14 @@ export async function authRoutes(app: FastifyInstance, opts: { config: Config })
     }
 
     const vault = wrappedKeySchema.parse(body.vault);
-    await withSystem(config, async (tx) => {
-      // OJO: `key_version` NO se incrementa. Es la generacion de la clave de
-      // boveda, y va dentro del AAD de cada item. Subirla al re-envolver la
-      // misma vaultKey dejaria TODOS los items sin descifrar. Rotar de verdad
-      // (cambiar la vaultKey) exige re-cifrar la boveda entera y solo tiene
-      // sentido como operacion planificada.
-      await tx.query(
-        `UPDATE users
-            SET vault_cipher = $2, vault_nonce = $3, kdf = $4::jsonb, updated_at = now()
-          WHERE id = $1`,
-        [
-          user.id,
-          Buffer.from(vault.ciphertext, 'base64'),
-          Buffer.from(vault.nonce, 'base64'),
-          JSON.stringify({ ...kdfFrom(user, config), version: body.kdfVersion }),
-        ],
-      );
+    // OJO: `key_version` NO se incrementa. Es la generacion de la clave de
+    // boveda, y va dentro del AAD de cada item. Subirla al re-envolver la misma
+    // vaultKey dejaria TODOS los items sin descifrar. Rotar de verdad (cambiar
+    // la vaultKey) exige re-cifrar la boveda entera y solo tiene sentido como
+    // operacion planificada.
+    await updateUserVault(config, user.id, vault, {
+      ...kdfFrom(user, config),
+      version: body.kdfVersion,
     });
 
     await audit(config, { userId: user.id, action: 'auth.rekey', request });
@@ -359,22 +413,12 @@ export async function authRoutes(app: FastifyInstance, opts: { config: Config })
     const salt = generateSalt();
     const authHash = await hashAuthKey(config.authPepper, newAuthKey, salt);
 
-    await withSystem(config, async (tx) => {
-      // `key_version` se mantiene: la vaultKey no cambia, solo su envoltorio.
-      await tx.query(
-        `UPDATE users
-            SET auth_hash = $2, auth_salt = $3, vault_cipher = $4, vault_nonce = $5,
-                kdf = $6::jsonb, failed_logins = 0, locked_until = NULL, updated_at = now()
-          WHERE id = $1`,
-        [
-          user.id,
-          authHash,
-          salt,
-          Buffer.from(vault.ciphertext, 'base64'),
-          Buffer.from(vault.nonce, 'base64'),
-          JSON.stringify({ ...kdfFrom(user, config), version: body.kdfVersion }),
-        ],
-      );
+    // `key_version` se mantiene: la vaultKey no cambia, solo su envoltorio.
+    await updateUserCredentials(config, user.id, {
+      authHash,
+      salt,
+      vault,
+      kdf: { ...kdfFrom(user, config), version: body.kdfVersion },
     });
 
     await audit(config, { userId: user.id, action: 'auth.master_password.changed', request });

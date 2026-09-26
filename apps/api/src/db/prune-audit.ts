@@ -12,7 +12,7 @@
  *   - numero maximo de filas: cota dura si un ataque dispara el caudal entre
  *     dos pasada, mas rapido de lo que la poda puede seguir.
  */
-import { closePool, getPool } from './pool.js';
+import { closeAllPools, getPool } from './pool.js';
 
 /** Dias que se conservan. Ajuste de despliegue, no de codigo. */
 const KEEP_DAYS = Number(process.env['AUDIT_KEEP_DAYS'] ?? 30);
@@ -64,7 +64,7 @@ try {
   // orquestador no entre en bucle de reinicios.
   process.stderr.write(`No se pudo podar audit_log: ${error instanceof Error ? error.message : String(error)}\n`);
 } finally {
-  await closePool();
+  await closeAllPools();
 }
 
 process.exit(0);

@@ -7,9 +7,8 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { closeDatabase, createTestApp, makeAccount, makeClient, registerPayload, resetDatabase, testConfig, type TestClient } from '../helpers.js';
+import { closeDatabase, createTestApp, withAdmin, makeAccount, makeClient, registerPayload, resetDatabase, testConfig, type TestClient } from '../helpers.js';
 import { issueInviteCode } from '../../src/crypto/server.js';
-import { withSystem } from '../../src/db/withUser.js';
 
 const API = '/api/v1';
 let app: FastifyInstance;
@@ -132,7 +131,7 @@ describe('POST /auth/register', () => {
     await client.post(`${API}/auth/register`, registerPayload(account));
 
     const config = testConfig();
-    const filas = await withSystem(config, async (tx) => {
+    const filas = await withAdmin(config, async (tx) => {
       const res = await tx.query<Record<string, unknown>>('SELECT * FROM users WHERE email = $1', [
         account.email,
       ]);
@@ -512,7 +511,7 @@ describe('POST /auth/master-password', () => {
 
     // La clave de boveda sigue siendo la MISMA: ningun item se re-cifro.
     const config = testConfig();
-    const filas = await withSystem(config, async (tx) => {
+    const filas = await withAdmin(config, async (tx) => {
       const res = await tx.query<{ vault_cipher: Buffer; key_version: number }>(
         'SELECT vault_cipher, key_version FROM users WHERE email = $1',
         [account.email],
@@ -618,7 +617,7 @@ describe('bitacora de auditoria', () => {
     await client.post(`${API}/auth/logout`);
 
     const config = testConfig();
-    const filas = await withSystem(config, async (tx) => {
+    const filas = await withAdmin(config, async (tx) => {
       const res = await tx.query<{ action: string; user_id: string | null }>(
         'SELECT action, user_id FROM audit_log ORDER BY at',
       );
@@ -629,7 +628,7 @@ describe('bitacora de auditoria', () => {
     expect(acciones).toContain('auth.register');
     expect(acciones).toContain('auth.logout');
 
-    const todo = JSON.stringify(await withSystem(config, (tx) => tx.query('SELECT * FROM audit_log')));
+    const todo = JSON.stringify(await withAdmin(config, (tx) => tx.query('SELECT * FROM audit_log')));
     expect(todo).not.toContain(account.authKey);
     expect(todo).not.toContain('contrasena-maestra');
   });

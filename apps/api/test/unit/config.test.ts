@@ -11,7 +11,8 @@ import { loadConfig, resetConfigCache } from '../../src/config.js';
 const MINIMO = {
   NODE_ENV: 'production',
   APP_ORIGIN: 'https://boveda.example.com',
-  DATABASE_URL: 'postgres://usuario:clave@db:5432/securekey',
+  DATABASE_URL: 'postgres://securekey_api:clave-app@db:5432/securekey',
+  DATABASE_APP_PASSWORD: 'contrasena-del-rol-restringido-01',
   AUTH_PEPPER: 'pepper-de-pruebas-securekey-0123456789abcdef',
 } as const;
 
@@ -93,10 +94,19 @@ describe('loadConfig', () => {
     expect(loadConfig(env()).allowedOrigins).toEqual(['https://boveda.example.com']);
   });
 
-  it('DATABASE_APP_URL cae a DATABASE_URL si no se define', () => {
-    expect(loadConfig(env()).databaseAppUrl).toBe(MINIMO.DATABASE_URL);
-    const propia = 'postgres://app:clave@db:5432/securekey';
-    expect(loadConfig(env({ DATABASE_APP_URL: propia })).databaseAppUrl).toBe(propia);
+  it('DATABASE_APP_PASSWORD es obligatoria: sin ella la API seria superusuario', () => {
+    const sinApp = { ...MINIMO } as Record<string, string>;
+    delete sinApp.DATABASE_APP_PASSWORD;
+    expect(() => loadConfig(sinApp as NodeJS.ProcessEnv)).toThrow(/DATABASE_APP_PASSWORD/);
+
+    // corta tampoco vale: es la credencial del rol restringido
+    expect(() => loadConfig(env({ DATABASE_APP_PASSWORD: 'corta' }))).toThrow(/DATABASE_APP_PASSWORD/);
+  });
+
+  it('DATABASE_ADMIN_URL cae a DATABASE_URL si no se define', () => {
+    expect(loadConfig(env()).databaseAdminUrl).toBe(MINIMO.DATABASE_URL);
+    const propia = 'postgres://securekey:otra@db:5432/securekey';
+    expect(loadConfig(env({ DATABASE_ADMIN_URL: propia })).databaseAdminUrl).toBe(propia);
   });
 
   it('el mensaje de error NUNCA imprime el valor de una variable', () => {

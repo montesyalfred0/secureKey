@@ -194,9 +194,25 @@ Todo se ajusta en `.env` (plantilla en `.env.example`, generado por
 | `APP_PORT` | `8443` | Puerto publicado por Caddy |
 | `APP_ORIGIN` | `https://localhost:8443` | Origen de la app, para cookies y validacion de `Origin` |
 | `AUTH_PEPPER` | generado | Pepper del verificador de autenticacion |
+| `DATABASE_APP_PASSWORD` | generado | Contrasena del rol `securekey_api`, con el que entra la API. **Distinta** de `POSTGRES_PASSWORD` a proposito: con el rol de migracion, un RCE en la API permitia leer ficheros del host y ejecutar comandos |
 | `ARGON2_MEMORY_KIB` | `19456` | Memoria de Argon2id. Subirlo cuesta CPU **a ti**, no al atacante |
 | `SESSION_IDLE_MINUTES` | `30` | Minutos de inactividad antes de pedir la contrasena maestra otra vez |
 | `REGISTRATION_MODE` | `open` | `invite` exige un codigo de administrador (ver `.env.example`) |
+
+### El rol con el que entra la API
+
+La API y el podador conectan como `securekey_api`, **sin superusuario**. El
+servicio `migrate` si lo necesita (crea el rol, aplica migraciones) y por eso
+lleva el rol de administracion: esa separacion es deliberada, no un descuido.
+
+Con el rol de superusuario, un RCE en la API permitia `pg_read_file` (leer
+ficheros del host), `COPY ... TO PROGRAM` (ejecutar comandos) y
+`ALTER TABLE items DISABLE ROW LEVEL SECURITY`, que es eliminar de un plumazo la
+unica barrera de la boveda. Con `securekey_api`, las cuatro estan bloqueadas y la
+RLS es una barrera de verdad.
+
+`test/integration/db-role.test.ts` lo comprueba, para que nadie deshaga el cambio
+sin darse cuenta.
 
 Si cambias el dominio o el puerto, actualiza tambien `APP_ORIGIN` y el
 `Caddyfile`.

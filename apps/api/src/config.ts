@@ -14,8 +14,23 @@ const envSchema = z.object({
   ALLOWED_ORIGINS: z.string().default(''),
 
   DATABASE_URL: z.string().min(1),
-  /** Rol con permisos reducidos usado por la aplicacion (sujeta a RLS). */
-  DATABASE_APP_URL: z.string().min(1).optional(),
+  /**
+   * Contrasena del rol `securekey_api`, con el que entra la API.
+   *
+   * Es un secreto APARTE y no el mismo que `POSTGRES_PASSWORD`, a proposito: si
+   * compartieran contrasena, un atacante con la de la API (un RCE) podria
+   * conectarse como el superusuario y saltarse la RLS, que es justo lo que el
+   * rol restringido evita.
+   */
+  DATABASE_APP_PASSWORD: z.string().min(16),
+  /**
+   * URL de superusuario, solo para el servicio de migraciones y para el canal
+   * de administracion de los tests.
+   *
+   * OJO: la API y el podador NUNCA deben leer esto. Si lo hicieran, el cambio a
+   * `securekey_api` seria cosmetico.
+   */
+  DATABASE_ADMIN_URL: z.string().min(1).optional(),
 
   /**
    * Pepper del servidor para el verificador de autenticacion.
@@ -68,7 +83,8 @@ export type Config = {
   appOrigin: string;
   allowedOrigins: string[];
   databaseUrl: string;
-  databaseAppUrl: string;
+  databaseAppPassword: string;
+  databaseAdminUrl: string;
   authPepper: string;
   sessionTtlMs: number;
   sessionIdleMs: number;
@@ -121,7 +137,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     appOrigin: env.APP_ORIGIN,
     allowedOrigins: [...allowedOrigins],
     databaseUrl: env.DATABASE_URL,
-    databaseAppUrl: env.DATABASE_APP_URL ?? env.DATABASE_URL,
+    databaseAppPassword: env.DATABASE_APP_PASSWORD,
+    databaseAdminUrl: env.DATABASE_ADMIN_URL ?? env.DATABASE_URL,
     authPepper: env.AUTH_PEPPER,
     sessionTtlMs: env.SESSION_TTL_HOURS * 3_600_000,
     sessionIdleMs: env.SESSION_IDLE_MINUTES * 60_000,

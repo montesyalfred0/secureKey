@@ -22,6 +22,11 @@ function secret(bytes) {
 
 const GENERATED = {
   POSTGRES_PASSWORD: () => secret(32),
+  // Contrasena del rol `securekey_api`, con el que entra la API. Tiene que ser
+  // DISTINTA de `POSTGRES_PASSWORD`: si fueran la misma, un atacante que
+  //iese la de la API (un RCE) podria conectarse como superusuario y saltarse
+  // la RLS, que es justo lo que ese rol restringido evita.
+  DATABASE_APP_PASSWORD: () => secret(32),
   AUTH_PEPPER: () => secret(32),
   INVITE_SECRET: () => secret(32),
 };

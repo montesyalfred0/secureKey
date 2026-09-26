@@ -22,7 +22,7 @@ En orden de importancia:
 |---|---|---|---|
 | A1 | Robo de la base de datos (backup filtrado, SQLi, snapshot del volumen) | La tabla completa, sin el `.env` | **Nada utilizable.** No hay texto claro y la contrasena maestra exige 19 MiB de memoria por intento |
 | A2 | Robo de la BD **y** del `.env` | Pepper + tabla | Requiere romper Argon2id offline. El pepper no cambia el resultado, solo lo encarece |
-| A3 | Compromiso del servidor (codigo, imagen, root) | Control de la API y la BD | Puede leer **cifrados** y **metadatos** (correos, `item_id`, fechas, tamano de las credenciales). No puede descifrar. **No** puede restablecer contrasenas maestras |
+| A3 | Compromiso del servidor (codigo, imagen, root) | Control de la API y la BD | Puede leer **cifrados** y **metadatos** (correos, `item_id`, fechas, tamano de las credenciales). No puede descifrar. **No** puede restablecer contrasenas maestras. La API entra con un rol **sin superusuario**, asi que un RCE no le da ni leer ficheros del host ni ejecutar comandos |
 | A4 | XSS en el navegador | JavaScript en el origen de la app | **Game over.** Puede leer la clave de boveda de la memoria y exfiltrarla |
 | A5 | Robo fisico del equipo | Portatil desbloqueado con la boveda abierta | Lectura de la boveda mientras este abierta. Mitigado por el bloqueo automatico a los 5 min |
 | A6 | Inspeccion de memoria / swap / hibernacion | Another process en el equipo | Fuera del modelo de esta version: la clave vive en memoria de JS |
@@ -65,6 +65,9 @@ independientes:
 | Retencion de `audit_log` con doble tope (antiguedad + volumen) | `api/src/db/prune-audit.ts` |
 | Registro cerrado por invitacion firmada | `api/src/scripts/invite.ts` |
 | `audit_prune` con `SECURITY DEFINER`, `search_path` fijo y sin `EXECUTE` para `securekey_app` | `db/migrations.ts` |
+| La API entra con un rol sin superusuario ni BYPASSRLS | `db/migrations.ts` (`ensureApiRole`) |
+| Escrituras de `users` como funciones `SECURITY DEFINER` | `db/migrations.ts`, `routes/auth.ts` |
+| Contrasena del rol de la API distinta de la del superusuario | `.env` (`DATABASE_APP_PASSWORD`) |
 | CSP sin `unsafe-inline` ni `unsafe-eval`, verificada por test | `infra/caddy/Caddyfile`, `apps/web/test/http-checks.mjs` |
 | HSTS, nosniff, no-referrer, frame-ancestors none, Permissions-Policy | `infra/caddy/Caddyfile` |
 | Contenedores sin root, `read_only`, `cap_drop: ALL` | `docker-compose.yml` |
@@ -104,7 +107,48 @@ zero-knowledge, no una funcionalidad pendiente.
 expuesta a Internet, con el registro abierto y sin 2FA, es un riesgo asumido
 que el usuario debe conocer.
 
-### 4.4 El servidor ve metadatos
+### 4.4 La API entra sin superusuario
+
+Antes de endurecerlo, la API conectaba con el mismo rol que las migraciones, que
+**era superusuario**. No era un descuido: el flujo de autenticacion escribe en
+`users` antes de que exista sesion, y sin `app.user_id` publicado la RLS
+rechaza la escritura (`WITH CHECK (id = app_user_id())` con NULL). Hacia falta
+saltarsela de alguna forma.
+
+Lo que se midio con solo la credencial que la API tiene en su entorno:
+
+| Con superusuario | Con `securekey_api` |
+| --- | --- |
+| `SELECT pg_read_file('/etc/passwd')` -> **devuelve el fichero** | bloqueado |
+| `COPY (...) TO PROGRAM 'id > /tmp/x'` -> **ejecuta el comando** | bloqueado |
+| `CREATE ROLE infiltrado` -> **lo crea** | bloqueado |
+| `ALTER TABLE items DISABLE ROW LEVEL SECURITY` -> **desactiva la RLS** | bloqueado |
+
+La cuarta es la que importa mas: con ella, un RCE en la API eliminaba de un
+pleno la unica barrera de la boveda.
+
+El arreglo tiene dos partes:
+
+1. **Migracion 004**: las cuatro escrituras de `users` (alta, kdf, rekey y
+   cambio de contrasena) se mueven a funciones `SECURITY DEFINER` acotadas, con
+   `search_path` fijo y `EXECUTE` revocado a `PUBLIC`, concedidas a
+   `securekey_app`. Es el mismo patron que ya usaban `auth_lookup` y
+   `session_lookup`.
+2. **Rol `securekey_api`**: `NOSUPERUSER NOBYPASSRLS`, miembro de
+   `securekey_app`, con contrasena **distinta** de la del superusuario. Si
+   compartieran contrasena, un atacante con la de la API se conectaria como
+   superusuario y el cambio seria cosmetico.
+
+Con esto, la RLS deja de ser un `SET LOCAL ROLE` de distancia y pasa a ser una
+barrera real. Lo que **no** cambia: la superficie de superusuario se reduce a
+unas pocas funciones revisadas, que es donde sigue haciendo falta (crear el rol,
+aplicar migraciones).
+
+`test/integration/db-role.test.ts` fija las cuatro. Sin ese fichero, un
+"arreglo" razonable —volver a poner `POSTGRES_USER` en la `DATABASE_URL` de la
+API— pasaria todos los tests, porque las consultas seguirian funcionando.
+
+### 4.5 El servidor ve metadatos
 
  aunque no descifre nada, la base de datos revela: que correo existe, cuando se
 creo cada credencial, cuantas hay, cuanto ocupa cada una, desde que IP se

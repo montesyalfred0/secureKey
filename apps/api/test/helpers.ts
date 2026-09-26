@@ -7,11 +7,11 @@
  * de autenticacion darian verde por el motivo equivocado.
  */
 import type { FastifyInstance, InjectOptions } from 'fastify';
+import type { PoolClient } from 'pg';
 import { buildApp } from '../src/app.js';
 import { loadConfig, resetConfigCache, type Config } from '../src/config.js';
-import { runMigrations } from '../src/db/migrations.js';
-import { closePool } from '../src/db/pool.js';
-import { withSystem } from '../src/db/withUser.js';
+import { ensureApiRole, runMigrations } from '../src/db/migrations.js';
+import { closeAllPools, createPool } from '../src/db/pool.js';
 import {
   createCipheriv,
   createDecipheriv,
@@ -33,6 +33,8 @@ export const CSRF_COOKIE = '__Host-sk_csrf';
 export const SESSION_COOKIE = '__Host-sk_session';
 
 const DEFAULT_DATABASE_URL = 'postgres://securekey:securekey@localhost:5432/securekey_test';
+const DEFAULT_APP_URL =
+  'postgres://securekey_api:securekey_test_app@localhost:5432/securekey_test';
 
 /**
  * Pepper fijo y solo de test. Determinismo: si fuese aleatorio, dos
@@ -48,7 +50,16 @@ export function testConfig(overrides: Record<string, string | undefined> = {}): 
     APP_ORIGIN: 'https://localhost:8443',
     ALLOWED_ORIGINS: 'https://localhost:8443',
     AUTH_PEPPER: TEST_PEPPER,
-    DATABASE_URL: process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL,
+    // La app bajo prueba entra con el rol RESTRINGIDO, igual que en
+    // produccion. Es deliberado: si los tests usaran el superusuario, no
+    // detectarian que alguna consulta suya depende de privilegios que ya no
+    // tiene, que es exactamente el fallo que introduce este cambio.
+    DATABASE_URL: process.env.DATABASE_APP_URL ?? DEFAULT_APP_URL,
+    DATABASE_APP_PASSWORD: process.env.DATABASE_APP_PASSWORD ?? 'securekey_test_app',
+    // Canal de administracion para el TRUNCATE entre tests. Separate del de la
+    // app a proposito: truncar exige superusuario, y no se quiere que la app
+    // lo tenga.
+    DATABASE_ADMIN_URL: process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL,
     // La suite completa hace cientos de peticiones en segundos. Con los
     // limites de produccion (5 registros por hora, 10 logins por minuto) el
     // rate limiting se comeria los tests. Los limites tienen su propio test
@@ -62,20 +73,65 @@ export function testConfig(overrides: Record<string, string | undefined> = {}): 
   return loadConfig(merged as NodeJS.ProcessEnv);
 }
 
-/** Aplica las migraciones una vez por proceso de test. */
+/** Aplica las migraciones y crea el rol restringido. */
 export async function migrateDatabase(config: Config): Promise<void> {
   await runMigrations(config);
+  await ensureApiRole(config.databaseAdminUrl, config.databaseAppPassword);
 }
 
-/** Vacia todas las tablas. El orden no importa con `CASCADE`. */
-export async function resetDatabase(config: Config): Promise<void> {
-  await withSystem(config, async (tx) => {
-    await tx.query('TRUNCATE users, items, sessions, audit_log RESTART IDENTITY CASCADE');
-  });
+/**
+ * Vacia todas las tablas entre tests.
+ *
+ * Usa el canal de administracion, no el de la app: `TRUNCATE` es DDL y exige
+ * superusuario. Que la app no pueda hacerlo tambien es lo que se quiere.
+ */
+export async function resetDatabase(_config: Config): Promise<void> {
+  // OJO: `DATABASE_ADMIN_URL`, no `DATABASE_URL`. En el contenedor de test
+  // `DATABASE_URL` es la del rol restringido (a proposito, para que la app bajo
+  // prueba use el mismo camino que produccion), y `TRUNCATE` es DDL: con ese
+  // rol falla con "permission denied for table users".
+  const adminUrl = process.env['DATABASE_ADMIN_URL'] ?? DEFAULT_DATABASE_URL;
+  const client = createPool(adminUrl);
+  try {
+    await client.query('TRUNCATE users, items, sessions, audit_log RESTART IDENTITY CASCADE');
+  } finally {
+    await client.end();
+  }
 }
 
 export async function closeDatabase(): Promise<void> {
-  await closePool();
+  await closeAllPools();
+}
+
+/**
+ * Transaccion por el canal de ADMINISTRACION, para los tests que necesitan
+ * INSPECCIONAR la base en vez de usarla como lo haria la app.
+ *
+ * Hace falta porque la app entra con el rol restringido y la RLS hides todo lo
+ * que no sea suyo: un test que consulta `users` a traves de `withSystem` ve
+ * cero filas, que no es un fallo de la app sino el aislamiento funcionando.
+ * Un test de la boveda SIEMPRE debe pasar por la API, que es el unico camino
+ * real; para mirar debajo de la映画 esta via.
+ */
+export async function withAdmin<T>(
+  _config: Config,
+  fn: (tx: PoolClient) => Promise<T>,
+): Promise<T> {
+  const adminUrl = process.env['DATABASE_ADMIN_URL'] ?? DEFAULT_DATABASE_URL;
+  const pool = createPool(adminUrl);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+    await pool.end();
+  }
 }
 
 export type TestApp = { app: FastifyInstance; config: Config };

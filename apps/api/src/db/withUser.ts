@@ -120,15 +120,34 @@ export function withUser<T>(
 }
 
 /**
- * Consulta fuera del contexto de usuario. Reservada a migraciones y a las
- * funciones SECURITY DEFINER que necesita el flujo de autenticacion.
- * NO debe usarse para leer credenciales de un usuario.
+ * Consulta fuera del contexto de usuario. Reservada a las funciones
+ * SECURITY DEFINER que necesita el flujo de autenticacion, y para las
+ * migraciones.
+ *
+ * Conecta con `config.databaseUrl`, que es el rol RESTRINGIDO. Las migraciones
+ * necesitan superusuario y por eso usan `withSystemAdmin`: conectan con
+ * `config.databaseAdminUrl`, que el servicio de migraciones tiene y la API no.
  */
 export function withSystem<T>(
   config: Config,
   fn: (tx: PoolClient) => Promise<T>,
 ): Promise<T> {
   return inTransaction(config, async () => {}, fn);
+}
+
+/**
+ * Igual que `withSystem`, pero por el canal de superusuario.
+ *
+ * Solo debe usarse en migraciones y en la creacion del rol de la API. Que exista
+ * una via separada es lo que hace explicito que la API no la tiene: si las
+ * migraciones usaran `withSystem`, el servicio `migrate` tendria que llevar el
+ * rol restringido, que no puede hacer `CREATE ROLE`.
+ */
+export function withSystemAdmin<T>(
+  config: Config,
+  fn: (tx: PoolClient) => Promise<T>,
+): Promise<T> {
+  return inTransaction({ ...config, databaseUrl: config.databaseAdminUrl }, async () => {}, fn);
 }
 
 export function firstRow<T extends QueryResultRow>(rows: readonly T[]): T | undefined {

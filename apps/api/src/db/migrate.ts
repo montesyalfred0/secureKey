@@ -3,8 +3,8 @@
  * antes de que levante la API.
  */
 import { loadConfig } from '../config.js';
-import { runMigrations } from './migrations.js';
-import { closePool, getPool } from './pool.js';
+import { ensureApiRole, runMigrations } from './migrations.js';
+import { closeAllPools, getPool } from './pool.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -25,7 +25,23 @@ async function main(): Promise<void> {
     process.stdout.write(`${result.applied ? 'aplicada  ' : 'omitida   '} ${result.id}\n`);
   }
 
-  await closePool();
+  // El rol de la aplicacion se crea DESPUES de las migraciones: las funciones
+  // SECURITY DEFINER hay que concederlas a `securekey_app` primero, y el rol
+  // nuevo tiene que ser miembro de ese.
+  const appPassword = config.databaseAppPassword;
+  if (appPassword === undefined) {
+    throw new Error(
+      'DATABASE_APP_PASSWORD no esta definido. Es la contrasena del rol con el que ' +
+        'entra la API: sin ella, la API tendria que conectarse como superusuario, que es ' +
+        'justo lo que este rol evita. Ejecuta `npm run secrets` para generarla.',
+    );
+  }
+  const role = await ensureApiRole(config.databaseAdminUrl, appPassword);
+  process.stdout.write(
+    `${role.created ? 'creado   ' : 'actualizado'} rol securekey_api (sin superusuario)\n`,
+  );
+
+  await closeAllPools();
 
   // Salida explicita: los timers internos del pool de `pg` pueden mantener el
   // event loop vivo, y un servicio one-shot que no termina bloquea para
