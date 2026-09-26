@@ -358,9 +358,27 @@ export type ModalProps = {
   children: JSX.Element | JSX.Element[];
   footer?: JSX.Element | null;
   width?: 'sm' | 'md' | 'lg';
+  /**
+   * Selector CSS del control que recibe el foco al abrir.
+   *
+   * Si no se indica, el foco va al primer campo enfocable, que en la
+   * estructura de este modal es la X de la cabecera. Para un dialogo de
+   * confirmacion destructiva eso es mala idea: `Enter` cerraria en vez de
+   * confirmar, asi que se apunta explicitamente a "Cancelar".
+   */
+  initialFocus?: string;
 };
 
-export function Modal({ open, title, subtitle, onClose, children, footer, width = 'md' }: ModalProps) {
+export function Modal({
+  open,
+  title,
+  subtitle,
+  onClose,
+  children,
+  footer,
+  width = 'md',
+  initialFocus,
+}: ModalProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
 
@@ -378,17 +396,18 @@ export function Modal({ open, title, subtitle, onClose, children, footer, width 
     document.body.style.overflow = 'hidden';
     if (gap > 0) document.body.style.paddingRight = `${gap}px`;
 
-    const focusable = panelRef.current?.querySelector<HTMLElement>(
-      'input:not([type="hidden"]), textarea, button:not([disabled])',
-    );
-    focusable?.focus();
+    const panel = panelRef.current;
+    const target =
+      (initialFocus !== undefined ? panel?.querySelector<HTMLElement>(initialFocus) : undefined) ??
+      panel?.querySelector<HTMLElement>('input:not([type="hidden"]), textarea, button:not([disabled])');
+    target?.focus();
 
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = previousOverflow;
       document.body.style.paddingRight = previousPadding;
     };
-  }, [open, onClose]);
+  }, [open, onClose, initialFocus]);
 
   if (!open) return null;
 
@@ -479,5 +498,103 @@ export function Alert({ tone, children, title }: AlertProps) {
         <div class="alert__text">{children}</div>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Confirmacion de accion destructiva
+// ---------------------------------------------------------------------------
+
+export type ConfirmDialogProps = {
+  open: boolean;
+  title: string;
+  /**
+   * Nombre de lo que se va a eliminar. Se resalta solo: es el dato que el
+   * usuario necesita leer para confirmar que ha pulsado donde debia.
+   */
+  subject?: string;
+  /** Frase de apoyo, p. ej. la cuenta asociada. */
+  detail?: string;
+  /** Aviso de irreversibilidad. Se pinta en el color de peligro. */
+  warning?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  /** Peticion en vuelo: deshabilita el boton y bloquea el cierre. */
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+};
+
+/**
+ * Dialogo de confirmacion para acciones irreversibles.
+ *
+ * Sustituye a `window.confirm()`, que abre una ventana del sistema operativo:
+ * fuera del diseno de la aplicacion, sin estilos, y bloquea el hilo de
+ * renderizado de modo que la app se queda congelada detras.
+ *
+ * Deliberadamente NO acepta JSX como cuerpo. Un dialogo de confirmacion tiene
+ * una forma fija (que, detalle, aviso de irreversibilidad) y componerla aqui
+ * evita que cada llamada site la invente y que un dia falte el aviso.
+ *
+ * El foco va a "Cancelar" y no al primer control de la cabecera (la X) porque
+ * en una accion destructiva lo razonable es que `Enter` NO confirme. Por eso
+ * `Modal` acepta `initialFocus`.
+ */
+export function ConfirmDialog({
+  open,
+  title,
+  subject,
+  detail,
+  warning = 'Esta accion no se puede deshacer.',
+  confirmLabel = 'Eliminar',
+  cancelLabel = 'Cancelar',
+  busy = false,
+  onConfirm,
+  onCancel,
+}: ConfirmDialogProps) {
+  // Mientras la peticion esta en vuelo el dialogo no se puede cerrar: si se
+  // cerrara, un error llegaria como un toast sin ningun sitio donde mirar.
+  const cancel = (): void => {
+    if (!busy) onCancel();
+  };
+
+  return (
+    <Modal
+      open={open}
+      title={title}
+      onClose={cancel}
+      width="sm"
+      initialFocus="[data-autofocus]"
+      footer={
+        <>
+          <div class="modal__spacer" />
+          <Button onClick={cancel} disabled={busy} data-autofocus>
+            {cancelLabel}
+          </Button>
+          <Button tone="danger" icon="trash" busy={busy} onClick={onConfirm}>
+            {confirmLabel}
+          </Button>
+        </>
+      }
+    >
+      <div class="confirm">
+        <span class="confirm__icon" aria-hidden="true">
+          <Icon name="alert" size={20} />
+        </span>
+        <div class="confirm__body">
+          {subject === undefined ? (
+            <span>Esta accion no se puede deshacer.</span>
+          ) : (
+            <span>
+              Vas a eliminar <strong>{subject}</strong>.
+              {detail !== undefined && detail.length > 0 && <> {detail}</>}
+            </span>
+          )}
+          {subject !== undefined && warning.length > 0 && (
+            <span class="confirm__warn">{warning}</span>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }

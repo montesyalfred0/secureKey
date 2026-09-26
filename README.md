@@ -108,6 +108,44 @@ pueda arreglar despues.
 - El portapapeles se limpia solo a los 20 segundos, y la boveda se bloquea a los
   5 minutos de inactividad.
 
+### El portapapeles, y por que no pide permiso
+
+Copiar una credencial programa un temporizador de 20 segundos que vacia el
+portapapeles. Para no borrar lo que el usuario haya copiado en medio, la
+primera version comparaba el contenido antes de vaciarlo, y esa comparacion
+usa `navigator.clipboard.readText()`, que **dispara un aviso de permisos**.
+
+El aviso salia veinte segundos despues de copiar, sin que el usuario estuviera
+haciendo nada: parecia una alerta en la pantalla. Y lo grave era lo de despues:
+si el usuario denegaba el permiso, el `catch` se tragaba el error y **el
+borrado no ocurria**, dejando la contrasena en el portapapeles para siempre. La
+proteccion fallaba en silencio justo en el caso en que mas importaba.
+
+Ahora el modulo consulta `navigator.permissions.query({name: 'clipboard-read'})`
+—que no muestra ningun aviso— y actua en consecuencia:
+
+| Permiso de lectura | Que hace |
+| --- | --- |
+| `granted` | Comprueba que sigue siendo tu contrasena y vacia. Es el comportamiento completo. |
+| `prompt` / `denied` / sin Permissions API | **Vacia directamente, sin preguntar.** El borrado siempre ocurre y el aviso nunca aparece. |
+
+El intercambio es deliberado: sin permiso la app no puede saber si copiaste
+otra cosa, y la borrara igualmente. Se asume que veinte segundos de una
+contrasena en un portapapeles del sistema es un riesgo mayor que comerse lo que
+el usuario copio en medio. Si algun dia se prefiere lo contrario, la
+alternativa es pedir el permiso **en el momento de copiar**, con el toast
+explicando el porqué, en lugar de veinte segundos despues a destiempo.
+
+Dos limites que conviene conocer:
+
+- El temporizador **no sobrevive a cerrar la pestaña**. Si copias y cierras la
+  app, la contrasena se queda en el portapapeles. Ninguna solucion basada en
+  temporizadores lo arregla sin meterse con un service worker.
+- `clipboard-read` es un permiso invasivo: permite leer lo que el usuario haya
+  copiado de cualquier parte. Por eso la app no lo pide y funciona sin el.
+  `Permissions-Policy` lo acota a `(self)` para que ningun contexto embebido
+  pueda leerlo.
+
 Lo que **no** cubre, y conviene saber antes de exponerlo en Internet: verificacion
 de correo electronico, segundo factor, recuperacion de contrasena y auditoria
 externa. Ver [`docs/modelo-de-amenazas.md`](docs/modelo-de-amenazas.md) para el

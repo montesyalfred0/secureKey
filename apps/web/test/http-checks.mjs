@@ -78,6 +78,24 @@ check('X-Frame-Options: DENY', h('x-frame-options') === 'DENY');
 check('Referrer-Policy: no-referrer', h('referrer-policy') === 'no-referrer');
 check('HSTS activo', h('strict-transport-security').includes('max-age=31536000'), h('strict-transport-security'));
 check('Permissions-Policy restringida', h('permissions-policy').includes('geolocation=()'));
+
+// El portapapeles es competencia exclusiva de la pagina: si un contexto
+// embebido puede leerlo, la copia de una credencial se la lleva el que se
+// haya colado. Se comprueba token a token, no con `includes`.
+const perms = h('permissions-policy')
+  .split(',')
+  .map((p) => p.trim());
+check(
+  'Permissions-Policy acota clipboard-read a (self)',
+  perms.includes('clipboard-read=(self)'),
+  h('permissions-policy'),
+);
+check(
+  'Permissions-Policy acota clipboard-write a (self)',
+  perms.includes('clipboard-write=(self)'),
+  h('permissions-policy'),
+);
+
 check('la cabecera Server no filtra la version', !/^Caddy/i.test(h('server')), h('server'));
 
 console.log('\n3. Assets y cache');

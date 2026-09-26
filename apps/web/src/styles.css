@@ -1007,6 +1007,51 @@ button {
   flex: 1;
 }
 
+/* -------------------------------------------------------------------------
+   9b. Dialogo de confirmacion
+   ---------------------------------------------------------------------- */
+
+.confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+/* El icono va en un circulo tintado en vez de suelto: es lo que separa de un
+   simple texto de aviso y hace que se lea como "atencion" de un vistazo. */
+.confirm__icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.confirm__body {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  line-height: 1.55;
+}
+
+/* Los nombres en <strong> son lo que el usuario esta a punto de perder: deben
+   destacar del texto que los rodea, no fundirse con el. */
+.confirm__body strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* La irreversibilidad, en su propia linea y en el color de peligro: es el
+   dato que hay que leer antes de pulsar el boton. */
+.confirm__warn {
+  display: block;
+  margin-top: var(--space-3);
+  color: var(--danger);
+  font-weight: 500;
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;

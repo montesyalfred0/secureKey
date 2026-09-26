@@ -27,7 +27,10 @@ https://localhost:8443 {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"
 		X-Frame-Options "DENY"
-		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+		# `clipboard-*=(self)` no es solo defensa: documenta que el
+		# portapapeles es competencia de ESTA pagina, e impide que un contexto
+		# embebido lea lo que el usuario copia de su boveda.
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), clipboard-read=(self), clipboard-write=(self)"
 		Cross-Origin-Opener-Policy "same-origin"
 		Cross-Origin-Resource-Policy "same-origin"
 

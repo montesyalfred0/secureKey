@@ -10,6 +10,7 @@ import { Icon } from './Icon.js';
 import {
   Alert,
   Button,
+  ConfirmDialog,
   EmptyState,
   Field,
   IconButton,
@@ -538,16 +539,34 @@ export function VaultScreen({
     setFormOpen(true);
   };
 
-  const confirmDelete = (item: DecryptedItem): void => {
-    if (!confirm(`¿Eliminar «${item.plain.title}»? Esta accion no se puede deshacer.`)) return;
-    void store
-      .removeItem(item.id)
-      .then(() => {
-        toast.success('Credencial eliminada');
-        setSelectedId(null);
-        setDetailOpen(false);
-      })
-      .catch(() => toast.error('No se pudo eliminar'));
+  // Estado del dialogo de borrado. Antes era un `window.confirm()`; ahora es
+  // un dialogo propio, asi que necesita saber que item es y si la peticion
+  // sigue en vuelo.
+  const [deleting, setDeleting] = useState<DecryptedItem | null>(null);
+  const [deletingBusy, setDeletingBusy] = useState(false);
+
+  const askDelete = (item: DecryptedItem): void => {
+    setDeletingBusy(false);
+    setDeleting(item);
+  };
+
+  const doDelete = async (): Promise<void> => {
+    const item = deleting;
+    if (item === null) return;
+
+    setDeletingBusy(true);
+    try {
+      await store.removeItem(item.id);
+      toast.success('Credencial eliminada');
+      setDeleting(null);
+      setSelectedId(null);
+      setDetailOpen(false);
+    } catch {
+      // El dialogo se queda abierto a proposito: el usuario necesita ver WHY
+      // no se borro, no un toast que se le va mientras mira otro sitio.
+      toast.error('No se pudo eliminar. Revisa tu conexion e intentalo de nuevo.');
+      setDeletingBusy(false);
+    }
   };
 
   return (
@@ -622,7 +641,7 @@ export function VaultScreen({
             <ItemDetail
               item={selected}
               onEdit={() => openEdit(selected)}
-              onDelete={() => confirmDelete(selected)}
+              onDelete={() => askDelete(selected)}
               onBack={() => setDetailOpen(false)}
             />
           ) : (
@@ -659,9 +678,23 @@ export function VaultScreen({
         onDelete={
           editing === null ? undefined : () => {
             setFormOpen(false);
-            confirmDelete(editing);
+            askDelete(editing);
           }
         }
+      />
+
+      <ConfirmDialog
+        open={deleting !== null}
+        title="Eliminar credencial"
+        subject={deleting?.plain.title || 'Sin titulo'}
+        detail={
+          deleting !== null && deleting.plain.username.length > 0
+            ? `La cuenta ${deleting.plain.username} dejara de estar guardada aqui.`
+            : undefined
+        }
+        busy={deletingBusy}
+        onConfirm={() => void doDelete()}
+        onCancel={() => setDeleting(null)}
       />
     </div>
   );
