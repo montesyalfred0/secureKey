@@ -251,9 +251,19 @@ Todo corre en Docker, asi que la VPS solo necesita Docker y un dominio.
 
 - Dominio con registro `A` a la IP de la VPS. Let's Encrypt **no** emite
   certificados para IPs desnudas.
-- Puertos **80 y 443** abiertos. El 80 lo necesita el desafio de Let's Encrypt.
-  Si tu proveedor lo bloquea, hay que pasar al desafio DNS-01.
 - Al menos **1 GB** de RAM (87 MB en reposo, con picos de scrypt de 16 MB).
+
+El puerto 443 hace falta siempre. **El 80 depende de lo que haya en la VPS**, y
+esa diferencia cambia la puesta en marcha:
+
+| Situacion | 80 | Desafio de Let's Encrypt | Guia |
+| --- | --- | --- | --- |
+| VPS dedicada | libre | HTTP-01, automatico | esta seccion |
+| VPS con nginx u otro proxy | **ocupado** | DNS-01, con API Token de Cloudflare | [`docs/despliegue-vps.md`](docs/despliegue-vps.md) |
+
+En la segunda, SecureKey pide el certificado por **DNS-01** precisamente porque
+no puede usar el 80, y publica **solo el 443**. La guia tiene los comandos
+exactos para no romper las otras aplicaciones del servidor.
 
 **Cambios en el `.env`**
 
@@ -263,11 +273,16 @@ Todo corre en Docker, asi que la VPS solo necesita Docker y un dominio.
 | `APP_ORIGIN` | `https://boveda.tudominio.com` |
 | `ALLOWED_ORIGINS` | `https://boveda.tudominio.com` |
 | `REGISTRATION_MODE` | `invite` |
+| `CF_API_TOKEN` | solo con DNS-01: token de Cloudflare con permiso `DNS:Edit` |
 
 Si se olvida `APP_ORIGIN` o `ALLOWED_ORIGINS`, el registro y el login devuelven
 **403** sin explicación: el hook `onRequest` rechaza cualquier `Origin` que no
 esté en la lista. Es el fallo mas probable de este despliegue, y conviene
 comprobarlo nada mas levantar.
+
+Si falta `CF_API_TOKEN`, el contenedor **no arranca**, a proposito. Es preferible
+fallar en el despliegue que quedarse reintentando en silencio hasta que caduque
+el certificado.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
@@ -276,9 +291,10 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 Cambios respecto al compose de desarrollo:
 
 - Caddy pide el certificado a **Let's Encrypt** solo (nada de `tls internal`, sin
-  aviso de seguridad en el navegador) y escucha en 443. El 80 queda reservado
-  para el desafio de la CA y la redireccion a HTTPS: la app nunca se sirve en
+  aviso de seguridad en el navegador) y escucha en 443. La app nunca se sirve en
   claro.
+- Con DNS-01, Caddy se construye desde [`infra/caddy/Dockerfile`](infra/caddy/Dockerfile)
+  para incluir el modulo de DNS de Cloudflare, que la imagen oficial no trae.
 - `prune` pasa a correr **cada hora** en vez de cada seis.
 - Se ajustan los limites de memoria y los parametros de Postgres
   (`max_connections`, `shared_buffers`, `log_min_duration_statement`).

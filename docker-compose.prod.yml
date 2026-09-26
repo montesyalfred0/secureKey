@@ -1,50 +1,69 @@
 # ===========================================================================
-# Capa de PRODUCCION. Un dominio real y Let's Encrypt.
+# Capa de PRODUCCION. Dominio real, TLS propio y Let's Encrypt.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
 # REQUISITOS, en este orden o no arranca:
-#   1. Un dominio con registro DNS `A`/`AAAA` a la IP de la VPS. Let's Encrypt
-#      NO emite certificados para IPs desnudas.
-#   2. Puertos 80 y 443 ABIERTOS. El 80 lo necesita el desafio HTTP-01. Si tu
-#      proveedor lo bloquea, cambia el `tls` del Caddyfile.prod por el desafio
-#      DNS-01:  tls { dns cloudflare {env.CF_API_TOKEN} }
-#   3. En el `.env`: APP_ORIGIN, ALLOWED_ORIGINS y APP_HOST con el dominio.
-#      Si se olvidan, la API responde 403 al registro y al login: el hook
-#      `onRequest` rechaza cualquier `Origin` fuera de la lista.
+#   1. Registro DNS `A` con la IP de la VPS, en modo "solo DNS" (nube gris).
+#      Let's Encrypt NO emite certificados para IPs desnudas, y con la nube
+#      naranja el navegador nunca llegaria a este Caddy.
+#   2. Puerto 443 LIBRE en el host. En una VPS donde ya hay un nginx sirviendo
+#      otras aplicaciones, 80 y 443 estan ocupados: hay que quitarle el 443 al
+#      nginx antes de arrancar esto. Ver `docs/despliegue-vps.md`.
+#   3. En el `.env`: APP_HOST, APP_ORIGIN, ALLOWED_ORIGINS y CF_API_TOKEN.
+#      Si APP_ORIGIN o ALLOWED_ORIGINS no se cambian, la API responde 403 al
+#      registro y al login: el hook `onRequest` rechaza todo `Origin` que no
+#      este en la lista.
 #
 # Lo que cambia respecto al compose de desarrollo, y por que:
 #
-#   1. Caddy pasa a 443 y a Let's Encrypt. Ademas se abre el 80, que solo
-#      sirve para el desafio de la CA y la redireccion a HTTPS: la app nunca se
-#      sirve en claro.
+#   1. Caddy pasa al 443 y pide su certificado a Let's Encrypt por el desafio
+#      DNS-01, que no necesita el puerto 80. Ese 80 es el que ya usa el nginx
+#      de las demas aplicaciones, y de ahi que el token de Cloudflare.
+#      La app nunca se sirve en claro por ningun tramite.
 #   2. `prune` pasa a cada hora en vez de cada seis. En produccion el relleno
 #      de la bitacora es un vector real de denegacion de servicio, y seis horas
 #      es una ventana larga.
 #   3. Limites de memoria y parametros de Postgres.
 #
 # NO se publica aqui ningun puerto de la base de datos ni de la API. Lo unico
-# que escucha hacia Internet es Caddy.
+# que escucha hacia Internet es Caddy, y solo en el 443.
 # ===========================================================================
 services:
   caddy:
-    image: caddy:2-alpine
+    # Imagen propia, no `caddy:2-alpine`. La oficial NO incluye el modulo de
+    # DNS de Cloudflare, y sin el no hay forma de pedir el certificado por
+    # DNS-01. Ver infra/caddy/Dockerfile.
+    build:
+      context: ./infra/caddy
+    image: securekey/caddy-cloudflare
     environment:
       # El Caddyfile.prod usa {$APP_HOST} para no tener que editarlo al
       # cambiar de host.
       APP_HOST: ${APP_HOST:?falta APP_HOST en el .env - pon tu dominio}
+      # API Token de Cloudflare con permiso de edicion de DNS. Lo necesita el
+      # desafio DNS-01 de Let's Encrypt, porque el 80 de esta VPS ya lo tiene
+      # el nginx que sirve las demas aplicaciones.
+      #
+      # `:?` hace fallar el arranque si falta, en vez de dejar que Caddy
+      # reintente sin token cada hora en silencio. Fallar al principio es mas
+      # util que fallar cuando caduque lo que hubiera emissionado.
+      CF_API_TOKEN: ${CF_API_TOKEN:?falta CF_API_TOKEN en el .env - token de Cloudflare con permiso DNS:Edit}
     # `!override` reemplaza la lista de puertos heredada del compose base en
     # vez de fusionarse con ella. Sin esto compose las concatena y el
-    # contenedor acaba publicando 8443 ademas de 80 y 443: verificado, el
+    # contenedor acaba publicando 8443 ademas del 443: verificado, el
     # despliegue de produccion dejaba el puerto de desarrollo abierto a
     # Internet. (Con `!reset` en su lugar la lista entera desaparece, porque esa
     # etiqueta descarta el valor en vez de sustituirlo.)
+    #
+    # SOLO 443. No 80: en una VPS con otras aplicaciones, el 80 pertenece al
+    # nginx que las sirve, y un puerto no puede estar en manos de dos servicios
+    # a la vez. Caddy no lo necesita para nada gracias al desafio DNS-01.
     #
     # Tampoco vale dejar 8443 "por si acaso": es el puerto del `Caddyfile` de
     # desarrollo y en produccion no lo escucha nadie. Seria un puerto abierto
     # que no sirve para nada.
     ports: !override
-      - "80:80"
       - "443:443"
     volumes:
       - ./infra/caddy/Caddyfile.prod:/etc/caddy/Caddyfile:ro

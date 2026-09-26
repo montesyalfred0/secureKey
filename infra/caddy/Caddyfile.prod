@@ -1,30 +1,45 @@
 # ===========================================================================
-# Caddy como unico punto de entrada - PRODUCCION.
+# Caddy en la VPS: unico punto de entrada, con TLS propio.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
-# Diferencias con el Caddyfile de desarrollo, y por que:
+# LA TOPOLOGIA, y por que es como es:
 #
-#   1. `tls internal` desaparece. Con un dominio real, Caddy pide el
-#      certificado a Let's Encrypt por su cuenta, lo renueva cada 30 dias y
-#      nadie tiene que instalar una CA en ningun equipo. El navegador ya
-#      confia en Let's Encrypt de serie, asi que no hay aviso de seguridad.
+# En esa VPS hay un nginx que sirve tres aplicaciones mas y que ya ocupa los
+# puertos 80 y 443. Un puerto solo lo puede escuchar un servicio, asi que
+# SecureKey NO puede salir por ahi. Este Caddy toma el 443 (que estaba
+# publicado pero libre: nada escuchaba en el) y nginx se queda con el 80 para
+# las demas.
 #
-#   2. Escucha en :443 y tambien en :80, porque el desafio HTTP-01 de Let's
-#      Encrypt necesita el 80 abierto. El 80 solo sirve para la redireccion a
-#      HTTPS; nunca se sirve la app en claro.
+# 1. El 443 lo pide Let's Encrypt con el desafio DNS-01, no con el HTTP-01.
 #
-#   3. La CSP pierde `ws://localhost:8443 wss://localhost:8443`, que era del
-#      HMR de Vite y no tiene sentido aqui.
+#    El HTTP-01 necesita el puerto 80, que es de nginx. El DNS-01 no necesita
+#    ningun puerto: Caddy solo tiene que crear un registro TXT en la zona y
+#    pedir que lo confirme la CA. Por eso `auto_https disable_redirects` mas
+#    abajo y la ausencia de un bloque `http://`: sin las dos cosas, Caddy
+#    intentaria escuchar en el 80 al montar la configuracion y el contenedor
+#    no arrancaria.
+#
+#    Requiere un API Token de Cloudflare con permiso de edicion de DNS. Ver
+#    `.env.example` y `docs/despliegue-vps.md`.
+#
+# 2. Como el registro DNS esta en "solo DNS" (nube gris), el trafico NO pasa
+#    por Cloudflare: va del navegador directamente a este Caddy. Por eso el
+#    certificado tiene que ser de una CA publica y no un certificado interno.
+#
+# 3. `header_up X-Forwarded-For {remote_host}` sigue siendo lo correcto: Caddy
+#    es el primer salto, asi que `{remote_host}` ES la IP real del cliente. Si
+#    algun dia se pone este Caddy detras de otro proxy, esa linea hay que
+#    cambiarla por la cabecera que envie ese proxy; dejarla como esta seria
+#    perder la IP en el `audit_log` y dejar el rate limit inservible.
 #
 # REQUISITOS, en este orden o no funciona:
-#   - Un dominio con un registro DNS `A` (o `AAAA`) apuntando a la IP de la
-#     VPS. Let's Encrypt NO emite certificados para IPs desnudas.
-#   - Puertos 80 y 443 abiertos en el firewall. Si el proveedor bloquea el 80,
-#     hace falta el desafio DNS-01: `tls { dns cloudflare {env.CF_API_TOKEN} }`.
-#   - `APP_ORIGIN` y `ALLOWED_ORIGINS` en el `.env` con el dominio nuevo. Si se
-#     olvidan, la API responde 403 al registro y al login: el hook `onRequest`
-#     rechaza cualquier `Origin` que no este en la lista.
+#   - Registro DNS `A` con la IP de la VPS, en modo "solo DNS" (nube gris).
+#   - Puerto 443 libre en el host. Si algo lo ocupa, esto no arranca.
+#   - `APP_HOST`, `APP_ORIGIN`, `ALLOWED_ORIGINS` y `CF_API_TOKEN` en el `.env`.
+#     Si `APP_ORIGIN` o `ALLOWED_ORIGINS` no se cambian, la API responde 403 al
+#     registro y al login: el hook `onRequest` rechaza todo `Origin` que no
+#     este en la lista.
 # ===========================================================================
 
 {
@@ -32,9 +47,15 @@
 	auto_https disable_redirects
 }
 
-# El dominio sale del entorno, para no tocar este fichero al cambiar de
-# host. Caddy lo lee de las variables del contenedor.
+# El dominio sale del entorno, para no tocar este fichero al cambiar de host.
 {$APP_HOST} {
+	# Let's Encrypt por DNS-01 contra la zona de Cloudflare. Sin este bloque
+	# Caddy pediria el certificado por HTTP-01, que necesita el 80 y fallaria
+	# porque ese puerto es de nginx.
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+	}
+
 	encode zstd gzip
 
 	header {
@@ -85,8 +106,6 @@
 
 			reverse_proxy api:3000 {
 				header_up X-Forwarded-Proto https
-				# Se SOBRESCRIBE el X-Forwarded-For con la IP real en lugar de
-				# heredarlo; el API limita que rangos se creen (app.ts).
 				header_up X-Forwarded-For {remote_host}
 			}
 		}
@@ -99,7 +118,10 @@
 	}
 }
 
-# Solo para el desafio de Let's Encrypt: 80 nunca sirve la app.
-http://{$APP_HOST} {
-	redir https://{host}{uri} permanent
-}
+# NO hay bloque `http://{$APP_HOST}` a proposito, y no es un olvido.
+#
+# El puerto 80 de esa VPS es del nginx que sirve las demas aplicaciones, asi que
+# Caddy no puede escucharlo. La redireccion de http a https la pone un fichero
+# aparte en el nginx (`conf.d/securekey.conf`), que ademas es necesario: sin
+# el, `http://securekey.yal99.com` caeria en el primer `server` de nginx
+# (jwaddresses) y serviria otra aplicacion bajo el nombre de este dominio.
