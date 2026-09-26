@@ -33,7 +33,17 @@ services:
       # El Caddyfile.prod usa {$APP_HOST} para no tener que editarlo al
       # cambiar de host.
       APP_HOST: ${APP_HOST:?falta APP_HOST en el .env - pon tu dominio}
-    ports:
+    # `!override` reemplaza la lista de puertos heredada del compose base en
+    # vez de fusionarse con ella. Sin esto compose las concatena y el
+    # contenedor acaba publicando 8443 ademas de 80 y 443: verificado, el
+    # despliegue de produccion dejaba el puerto de desarrollo abierto a
+    # Internet. (Con `!reset` en su lugar la lista entera desaparece, porque esa
+    # etiqueta descarta el valor en vez de sustituirlo.)
+    #
+    # Tampoco vale dejar 8443 "por si acaso": es el puerto del `Caddyfile` de
+    # desarrollo y en produccion no lo escucha nadie. Seria un puerto abierto
+    # que no sirve para nada.
+    ports: !override
       - "80:80"
       - "443:443"
     volumes:
@@ -56,6 +66,12 @@ services:
     # si falla, avisa por stderr y sale con codigo 0.
     command: ["sh", "-c", "while true; do node apps/api/dist/db/prune-audit.js; sleep 3600; done"]
     mem_limit: 128m
+
+  api:
+    # El base declara `mem_limit: 512m`, aqui se sube a 768M. `!override` y no
+    # `!reset`: el compose 2.24+ fusiona `deploy` con los campos de la version
+    # antigua, y sin el no se aplicaria el limite.
+    mem_limit: !override 768M
 
   db:
     # `mem_limit` y no `deploy.resources.limits`: el compose base ya usa
