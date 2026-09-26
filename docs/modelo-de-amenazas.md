@@ -59,6 +59,12 @@ independientes:
 | Rol de aplicacion sin DDL, adoptado con `SET LOCAL ROLE` | `db/withUser.ts` |
 | Funciones SECURITY DEFINER con `search_path` fijo y retorno acotado | `db/migrations.ts` |
 | Limitacion de tasa por IP y por cuenta con bloqueo temporal | `auth/routes`, `plugins/security.ts` |
+| `trustProxy` acotado a rangos privados, no `true` | `api/src/app.ts` |
+| `X-Forwarded-For` sobrescrito explicitamente por Caddy | `infra/caddy/Caddyfile` |
+| Access log con rotacion (20 MB x 10) | `infra/caddy/Caddyfile` |
+| Retencion de `audit_log` con doble tope (antiguedad + volumen) | `api/src/db/prune-audit.ts` |
+| Registro cerrado por invitacion firmada | `api/src/scripts/invite.ts` |
+| `audit_prune` con `SECURITY DEFINER`, `search_path` fijo y sin `EXECUTE` para `securekey_app` | `db/migrations.ts` |
 | CSP sin `unsafe-inline` ni `unsafe-eval`, verificada por test | `infra/caddy/Caddyfile`, `apps/web/test/http-checks.mjs` |
 | HSTS, nosniff, no-referrer, frame-ancestors none, Permissions-Policy | `infra/caddy/Caddyfile` |
 | Contenedores sin root, `read_only`, `cap_drop: ALL` | `docker-compose.yml` |
@@ -109,14 +115,80 @@ conecta cada sesion y un registro de acciones (`audit_log`).
 ### 4.5 Registro abierto
 
 Por defecto cualquiera con acceso crea cuentas. Un atacante puede:
-- Crear cuentas de relleno (limitado: 5 por hora y por IP).
+- Crear cuentas de relleno (limitado: 5 por hora y por IP, lo que con 50 IPs
+  siguen siendo 50 cuentas por hora).
 - Usar la instancia como almacen de credenciales propias.
 
-Con `REGISTRATION_MODE=invite` se cierra el grifo. Aun asi, **no se verifica
-que el correo exista**: en zero-knowledge es inherente (el servidor no puede
-saber nada del correo sin enviar un mensaje, y hacerlo romperia el modelo).
+En una VPS publica, `REGISTRATION_MODE=invite` **no es una recomendacion, es
+obligatorio**. El registro exige un codigo firmado con `INVITE_SECRET`
+(`skinv_<payload>.<HMAC-SHA256>`), atado a un correo concreto y con caducidad, de
+modo que no sirve para otra cuenta ni se reutiliza por accidente. No hay estado
+en el servidor: no hay tabla de invitaciones que robar ni mantener.
 
-### 4.6 Fuerza bruta contra la contrasena maestra
+Emitir una con `npm run invite -- correo@ejemplo.com`.
+
+Lo que **no** resuelve:
+
+- **No hay un solo uso ni limite de emision.** Quien tenga el `INVITE_SECRET`
+  puede emitir ilimitados, y el mismo codigo vale para siempre hasta que caduca.
+  Tratalo como una credencial mas (permisos 600) y rotarlo invalida todos los
+  pendientes, usados o no.
+- **No se verifica que el correo exista.** En zero-knowledge es inherente: el
+  servidor no puede saber nada del correo sin enviar un mensaje, y hacerlo
+  romperia el modelo. Una invitacion a un correo que nadie posee es una cuenta
+  inutil, no una cuenta comprometida.
+- **Un atacante con el secreto puede crear las cuentas que quiera**, y como el
+  contenido es indescifrable, no hay forma de distinguirlas de las reales. Ahi
+  solo sirve un limite de tasa por IP mas alto o una revision manual.
+
+### 4.6 Denegacion de servicio por llenado de disco
+
+`audit_log` recibe una fila por cada login fallido, **desde la red y sin
+autenticar**. Medido: 52 filas ocupaban 64 kB, de los cuales solo 8 kB eran datos
+(3 indices btree). Un atacante que dispare al limite desde muchas IPs llena el
+disco sin necesitar credenciales. Cada fila cuesta cuatro escrituras: heap mas
+los tres indices.
+
+Cerrado con dos topes, aplicados por el servicio `prune`
+(`apps/api/src/db/prune-audit.ts`):
+
+- `AUDIT_KEEP_DAYS` (30): antiguedad maxima.
+- `AUDIT_MAX_ROWS` (500 000): cota dura, por si el caudal de un ataque dispara la
+  tabla mas rapido de lo que corre la poda. Conserva las mas recientes y recorta
+  **por `id`, no por `at`**: con filas de la misma fecha — que es justo el caso de
+  un pico de trafico — un corte por fecha no distingue nada. Una version
+  anterior que combinaba ambos limites con `GREATEST()` no borraba nada en ese
+  escenario, y esta es la razon del diseno actual.
+
+El recorte por volumen **si** aplica sobre filas recientes, y es deliberado: es
+la unica forma de que la cota sirva de algo. Perder los ultimos minutos de un
+ataque que ya esta llenando el disco es un mal menor que quedarse sin disco. En
+reposo la tabla nunca llega al tope, asi que la ventana de 30 dias no se pierde.
+
+Los access log de Caddy tambien rotan (20 MB x 10). Un log sin rotar en un
+servidor publico es el mismo problema por otro camino: basta con pedir URLs de 8
+kB hasta llenar el volumen.
+
+### 4.7 Confianza en el `X-Forwarded-For`
+
+El limite de tasa por IP solo es util si la IP que ve la API es la real. Se
+verifico empiricamente que **Caddy sobrescribe** la cabecera: un
+`X-Forwarded-For` falsificado no cuela (se mando `203.0.113.99` y la API registro
+la IP del cliente real).
+
+Aun asi, la app no depende de ese comportamiento por defecto:
+
+- El `Caddyfile` fija `header_up X-Forwarded-For {remote_host}` de forma explicita.
+- `trustProxy` esta acotado a `loopback`, `linklocal` y `uniquelocal`, no a
+  `true`. Con `true` basta con publicar el puerto de la API, o anadir un
+  contenedor a la red `edge`, para que una cabecera falsificada evadiese el
+  limite por completo.
+
+Con un proxy delante de Caddy hay que configurar `trusted_proxies`; si no, Caddy
+no sabra que esa cabecera viene de alguien de fiar, y la IP que llegue a la API
+sera la del proxy para todo el mundo.
+
+### 4.8 Fuerza bruta contra la contrasena maestra
 
 Argon2id con 19 MiB la encarece, pero **no la vuelve impracticable** frente a
 un atacante con GPU y paciencia. Mitigaciones presentes: limitacion de tasa,
@@ -125,7 +197,7 @@ bloqueo de cuenta, y el coste de 19 MiB por intento.
 Si tu contrasena maestra es `L0nga-Contrasena-Maestra!` con un anchor
 generado, el modelo aguanta. Si es `123456`, no lo salva nada.
 
-### 4.7 Fuera de alcance
+### 4.9 Fuera de alcance
 
 - Extensions de navegador, clientes de escritorio, apps moviles.
 - Sincronizacion y resolucion de conflictos entre dispositivos.
@@ -133,3 +205,7 @@ generado, el modelo aguanta. Si es `123456`, no lo salva nada.
 - Cifrado del volumen de PostgreSQL en reposo.
 - Rotacion real de clave (cambio de `vaultKey`).
 - Auditoria externa.
+- WAF o CDN delante. La limitacion de tasa vive en la API, no en Caddy: si
+  alguien pone un proxy delante, ese proxy no hereda el limite.
+- Deteccion de intrusiones en el host. Los access log existen y rotan, pero no
+  hay nadie mirandolos automaticamente.

@@ -1,0 +1,95 @@
+# ===========================================================================
+# Servicios de TEST. Se aplican JUNTO a docker-compose.yml y solo a proposito:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml \
+#     --profile test run --rm test
+#
+# Por que NO viven en docker-compose.yml con un perfil: en un servidor publico,
+# tener un segundo PostgreSQL con contrasena fija declarada en el repositorio
+# (aunque sea en una red interna) es un riesgo que no compensa. Aqui se
+# declara, y en el fichero de produccion no existe la opcion de levantarlo.
+#
+# `test-db` no tiene volumen: cada ejecucion arranca de cero.
+# ===========================================================================
+services:
+  test-db:
+    profiles: ["test"]
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: securekey_test
+      POSTGRES_USER: securekey
+      # Contrasena solo de test. Este contenedor no sale de la red `backend` y
+      # no se despliega nunca fuera de una maquina de desarrollo.
+      POSTGRES_PASSWORD: securekey_test_local
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U securekey -d securekey_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+
+  # ===========================================================================
+  # Tests: servicio one-shot bajo demanda.
+  #
+  # Tres bloques, en este orden:
+  #   1. typecheck de shared, api y web (incluidos los tests de la API)
+  #   2. tests de la API (unitarios + de integracion contra `test-db`)
+  #   3. tests del cliente
+  #
+  # La parte de integracion es la unica que necesita base de datos: RLS,
+  # cookies httpOnly, doble envio de CSRF y optimistic locking no se pueden
+  # comprobar con dobles.
+  # ===========================================================================
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: dev
+    image: securekey/api-dev:latest
+    environment:
+      NODE_ENV: test
+      # `error` y no `fatal`: si la API registra un error inesperado durante
+      # las pruebas, quiero verlo en la salida y no tener que reproducirlo a
+      # mano. Los 4xx esperados no generan log.
+      LOG_LEVEL: error
+      DATABASE_URL: postgres://securekey:securekey_test_local@test-db:5432/securekey_test
+    # La cadena va escrita aqui y no como `npm run <script>` a proposito: el
+    # script `test` de la raiz ES este comando de Docker, asi que delegar en el
+    # arrancaria el contenedor dentro de si mismo para siempre.
+    # `$1` (que en `sh -c script arg` es `$0`) permite acotar la suite:
+    #   npm test                  -> todo
+    #   npm run test:integration  -> solo la parte que necesita base de datos
+    command:
+      - sh
+      - -c
+      - >-
+        npm run build --workspace @securekey/shared &&
+        npm run typecheck &&
+        if [ "$${0:-all}" = "integration" ]; then
+          npm run test:integration --workspace @securekey/api;
+        else
+          npm run test:api && npm run test:web;
+        fi
+    depends_on:
+      test-db:
+        condition: service_healthy
+    volumes:
+      # Fuentes desde el host: la imagen `dev` las lleva horneadas, pero
+      # reconstruir en cada iteracion de un test cuesta mas que lo que tarda
+      # la prueba. read_only: false porque vitest escribe en node_modules/.vite.
+      - ./apps/api:/app/apps/api
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+    networks:
+      - backend
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512

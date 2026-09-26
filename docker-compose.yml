@@ -164,6 +164,9 @@ services:
       # Certificados de la CA interna: en un volumen, no en el contenedor.
       - caddydata:/data
       - caddyconfig:/config
+      # Access log con la rotacion de Caddy. Sin este volumen la escritura
+      # falla y Caddy no arranca.
+      - caddylogs:/var/log/caddy
     depends_on:
       - web
       - api
@@ -185,88 +188,56 @@ services:
     pids_limit: 128
 
   # ===========================================================================
-  # Base de datos SOLO para los tests.
+  # Podador de la bitacora de seguridad.
   #
-  # Separate de `db` a proposito: los tests vacian tablas y crean usuarios, y
-  # no tienen por qué contaminar tus datos de desarrollo. Sin volumen, asi que
-  # cada `docker compose --profile test` arranca de cero.
+  # `audit_log` se escribe desde la red sin autenticar (una fila por cada
+  # login fallido) y cada fila cuesta el heap mas tres indices. Sin este
+  # servicio el disco se llena solo: es una denegacion de servicio gratuita
+  # para quien sepa la URL. Ver `apps/api/src/db/prune-audit.ts`.
+  #
+  # Es un bucle con `sleep` y no un cron del host a proposito: asi el
+  # temporizador viaja con el `docker compose up` de la VPS y no hay que
+  # recordar instalarlo ni que se pierde al reiniciar.
   # ===========================================================================
-  test-db:
-    profiles: ["test"]
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: securekey_test
-      POSTGRES_USER: securekey
-      POSTGRES_PASSWORD: securekey_test_local
-      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U securekey -d securekey_test"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-      start_period: 3s
-    networks:
-      - backend
-    security_opt:
-      - no-new-privileges:true
-
-  # ===========================================================================
-  # Tests: servicio one-shot bajo demanda.
-  #
-  #   npm test              -> typecheck de la monorepo + tests
-  #   npm test -- unit      -> solo los que no necesitan base de datos
-  #
-  # Tres bloques, en este orden:
-  #   1. typecheck de shared, api y web (incluidos los tests de la API)
-  #   2. tests unitarios del cliente y del servidor (sin base de datos)
-  #   3. tests de integracion de la API contra PostgreSQL de verdad
-  #
-  # El paso 3 es el unico que necesita base de datos: RLS, cookies httpOnly,
-  # doble envio de CSRF y optimistic locking no se pueden comprobar con dobles.
-  # ===========================================================================
-  test:
-    profiles: ["test"]
+  prune:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-      target: dev
-    image: securekey/api-dev:latest
+      target: runtime
+    image: securekey/api:latest
+    command: ["sh", "-c", "while true; do node apps/api/dist/db/prune-audit.js; sleep 21600; done"]
     environment:
-      NODE_ENV: test
-      # `error` y no `fatal`: si la API registra un error inesperado durante
-      # las pruebas, quiero verlo en la salida y no tener que reproducirlo a
-      # mano. Los 4xx esperados no generan log.
-      LOG_LEVEL: error
-      DATABASE_URL: postgres://securekey:securekey_test_local@test-db:5432/securekey_test
-    # La cadena va escrita aqui y no como `npm run <script>` a proposito: el
-    # script `test` de la raiz ES este comando de Docker, asi que delegar en el
-    # arrancaria el contenedor dentro de si mismo para siempre.
-    command:
-      - sh
-      - -c
-      - >-
-        npm run build --workspace @securekey/shared &&
-        npm run typecheck &&
-        npm run test:api &&
-        npm run test:web
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-securekey}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-securekey}
+      # Solo los que leen el entorno; el resto sale con sus defaults.
+      AUDIT_KEEP_DAYS: ${AUDIT_KEEP_DAYS:-30}
+      AUDIT_MAX_ROWS: ${AUDIT_MAX_ROWS:-500000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
-      test-db:
+      db:
         condition: service_healthy
-    volumes:
-      # Fuentes desde el host: la imagen `dev` los lleva horneados, pero
-      # reconstruir en cada iteracion de un test cuesta mas que lo que tarda
-      # la prueba. read_only: false porque vitest escribe en node_modules/.vite.
-      - ./apps/api:/app/apps/api
-      - ./apps/web:/app/apps/web
-      - ./packages:/app/packages
-      - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      migrate:
+        condition: service_completed_successfully
     networks:
       - backend
-    restart: "no"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
-    pids_limit: 512
+    pids_limit: 64
 
+  # Los servicios de test viven en `docker-compose.test.yml`, NO aqui.
+  #
+  # Estaban en este fichero con un perfil, y eso era un pieguno en un servidor
+  # publico: `docker compose --profile test up` levantaba un SEGUNDO
+  # PostgreSQL con la contrasena fija `securekey_test_local` en la red
+  # `backend`. No era alcanzable desde Internet, pero existia, consumia ~70 MB
+  # de memoria y era un segundo postgres que nadie tenia presente. En la VPS
+  # no debe existir siquiera la opcion.
 networks:
   # `edge` conecta lo que el navegador ve; `backend` es interna y sin salida,
   # de modo que ni la base de datos ni la API pueden alcanzar Internet.
@@ -278,3 +249,4 @@ volumes:
   pgdata: {}
   caddydata: {}
   caddyconfig: {}
+  caddylogs: {}

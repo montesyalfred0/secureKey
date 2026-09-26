@@ -55,22 +55,78 @@ https://localhost:8443 {
 	# ---------------------------------------------------------------------
 	# API: nunca servida desde disco, siempre reenviada.
 	# ---------------------------------------------------------------------
-	handle /api/* {
-		reverse_proxy api:3000 {
-			header_up X-Forwarded-Proto https
-		}
-	}
-
 	# ---------------------------------------------------------------------
-	# Frontend
+	# Access log.
+	#
+	# Antes esto era `output discard`, y en una VPS publica eso significaba no
+	# tener ninguna forma de ver un ataque en curso: ni escaneo de puertos, ni
+	# fuerza bruta, ni IPs. El `audit_log` de la app cubre acciones, no el
+	# sondeo de la capa HTTP, y lo escribe justo la aplicacion a la que estan
+	# atacando.
+	#
+	# JSON para poder filtrar por codigo, ruta o IP con `jq` sin parsear texto.
+	# Y ROTACION, porque un log sin rotar en un servidor publico es un vector de
+	# llenado de disco igual de serio que el que acabamos de tapar en
+	# audit_log: basta con pedir URLs de 8 kB.
+	#
+	# `no_log` en /healthz evita que el healthcheck de Docker llene el log de
+	# ruido cada 10 segundos.
 	# ---------------------------------------------------------------------
-	handle {
-		reverse_proxy web:80 {
-			header_up X-Forwarded-Proto https
-		}
-	}
-
+	# `exclude` deja pasar la sonda de salud sin ensuciar el log con una linea
+	# cada 10 segundos. OJO: NO se responde desde aqui. El health lo contesta la
+	# API, y responder 200 a pelo ocultaria justo lo que hay que ver cuando se
+	# cae la base de datos.
 	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20mb
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		format json
+		level INFO
+	}
+
+	# Log sin salida para las sondas de salud. El healthcheck de Docker pide
+	# /api/v1/health cada 10 segundos y, sin esto, el access log se llena de
+	# ruido que tapa justo las lineas que importan en un incidente.
+	#
+	# Hace falta un log CON NOMBRE y `log_name` por dos motivos de Caddy 2.11:
+	# la opcion `exclude` del `log` de sitio no existe, y el `log` dentro de
+	# un `handle` o de un `route` devuelve un `namedCustomLog` que el adaptador
+	# rechaza ("only handler directives can be used in routes"). `log_name` si
+	# es un handler.
+	log salud {
 		output discard
+	}
+
+	route {
+		handle /api/* {
+			# OJO: la sonda la responde la API de verdad. Servirla desde aqui
+			# con un 200 fijo ocultaria precisamente lo que hay que ver cuando se
+			# cae la base de datos.
+			@health path /api/v1/health
+			route @health {
+				log_name salud
+				reverse_proxy api:3000
+			}
+
+			reverse_proxy api:3000 {
+				header_up X-Forwarded-Proto https
+				# Se SOBRESCRIBE el X-Forwarded-For con la IP real en lugar de
+				# heredarlo. Depender de un default del comportamiento de Caddy
+				# para una decision de seguridad es fragile; el API ademas
+				# limita que rangos se creen (`trustProxy` en app.ts).
+				header_up X-Forwarded-For {remote_host}
+			}
+		}
+
+		# -----------------------------------------------------------------
+		# Frontend
+		# -----------------------------------------------------------------
+		handle {
+			reverse_proxy web:80 {
+				header_up X-Forwarded-Proto https
+			}
+		}
 	}
 }

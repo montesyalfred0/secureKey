@@ -237,9 +237,153 @@ GRANT EXECUTE ON FUNCTION auth_register_failure(uuid, integer, integer) TO secur
 GRANT EXECUTE ON FUNCTION auth_register_success(uuid) TO securekey_app;
 `;
 
-export const MIGRATIONS: readonly Migration[] = [{ id: '001_init', sql: initSql }];
+/**
+ * 002 - Retencion de la bitacora de seguridad.
+ *
+ * `audit_log` crece sin limite y, peor, cada fila cuesta cuatro escrituras:
+ * el heap mas tres indices (medido: 52 filas ocupaban 64 kB, de los cuales
+ * solo 8 kB eran datos). Se rellena desde la red SIN autenticar, porque cada
+ * login fallido inserta una fila. Un atacante que dispare al limite de 10
+ * Intentos/min por IP desde muchas IPs llena el disco del servidor sin
+ * necesitar credenciales. Es un vector de denegacion de servicio gratuito.
+ *
+ * La poda va en una funcion SECURITY DEFINER porque el rol de la aplicacion
+ * solo tiene politica INSERT sobre esta tabla: nadie puede leerla ni borrarla
+ * desde la API, y eso es lo que queremos. El podador es un rol de sistema.
+ */
+const auditRetentionSql = String.raw`
+CREATE OR REPLACE FUNCTION audit_prune(p_keep_days integer, p_max_rows bigint)
+RETURNS bigint
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+DECLARE
+  v_edge     timestamptz;
+  v_removed  bigint;
+  v_removed_by_age bigint := 0;
+  v_removed_by_cap bigint := 0;
+BEGIN
+  -- ---------------------------------------------------------------------
+  -- Fase 1: antiguedad. Es lo que manda en el uso normal.
+  -- ---------------------------------------------------------------------
+  v_edge := now() - make_interval(days => p_keep_days);
+  DELETE FROM audit_log WHERE at IS NOT NULL AND at < v_edge;
+  GET DIAGNOSTICS v_removed_by_age = ROW_COUNT;
+
+  -- ---------------------------------------------------------------------
+  -- Fase 2: cota dura de volumen.
+  --
+  -- Por que NO se resuelve con GREATEST(v_cutoff, <at de la fila N+1>): con
+  -- filas de la MISMA fecha, que es justo el caso de un pico de trafico, esa
+  -- fila tiene "at" igual a la anterior. GREATEST se quedaba con el tope de
+  -- antiguedad (30 dias atras) y no borraba NADA. Medido: 300 filas todas de
+  -- hoy, tope 100 -> seguian 300.
+  --
+  -- Ademas, el criterio "at" no distingue filas identicas, asi que no puede
+  -- cortar por un numero exacto. Se borra por identificador, que si es unico,
+  -- y se conservan las p_max_rows mas recientes con el indice de "at".
+  --
+  -- El "at IS NULL" no va en la seleccion: el orden "at DESC NULLS LAST" deja
+  -- las nulas al final, asi que nunca entran entre las p_max_rows que se
+  -- conservan, y una fila sin fecha no debe empujar fuera a otra que si la tiene.
+  IF (SELECT count(*) FROM audit_log) > p_max_rows THEN
+    DELETE FROM audit_log
+     WHERE id NOT IN (
+       SELECT id FROM audit_log
+        WHERE at IS NOT NULL
+        ORDER BY at DESC
+        LIMIT p_max_rows
+     );
+    GET DIAGNOSTICS v_removed_by_cap = ROW_COUNT;
+  END IF;
+
+  v_removed := v_removed_by_age + v_removed_by_cap;
+  RETURN v_removed;
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION audit_prune(integer, bigint) FROM PUBLIC;
+
+-- El rol de migracion (propietario) es quien la ejecuta desde el podador.
+GRANT EXECUTE ON FUNCTION audit_prune(integer, bigint) TO CURRENT_USER;
+`;
 
 export type MigrationResult = { id: string; applied: boolean };
+
+/**
+ * Las migraciones se identifican por `id` y `schema_migrations` guarda las ya
+ * aplicadas, asi que editar el SQL de una migracion existente NO hace que se
+ * vuelva a ejecutar: la base se queda con la version anterior para siempre.
+ *
+ * Por eso `audit_prune` lleva dos entradas. La primera es la version
+ * incompleta; la segunda la sustituye. Un despliegue que ya tenga aplicada la
+ * 001/003 ejecuta la 004 y arregla la funcion.
+ *
+ * El patron general: nunca editar una migracion ya publicada. O se anade una
+ * nueva, o se fuerza el recargado manual (DROP FUNCTION + volver a aplicar).
+ */
+const auditPruneV2Sql = String.raw`
+CREATE OR REPLACE FUNCTION audit_prune(p_keep_days integer, p_max_rows bigint)
+RETURNS bigint
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $fn$
+DECLARE
+  v_edge            timestamptz;
+  v_removed         bigint;
+  v_removed_by_age  bigint := 0;
+  v_removed_by_cap  bigint := 0;
+BEGIN
+  -- ---------------------------------------------------------------------
+  -- Fase 1: antiguedad. Es lo que manda en el uso normal.
+  -- ---------------------------------------------------------------------
+  v_edge := now() - make_interval(days => p_keep_days);
+  DELETE FROM audit_log WHERE at IS NOT NULL AND at < v_edge;
+  GET DIAGNOSTICS v_removed_by_age = ROW_COUNT;
+
+  -- ---------------------------------------------------------------------
+  -- Fase 2: cota dura de volumen.
+  --
+  -- Por que NO se resuelve combinando el corte por antiguedad con un "at"
+  -- calculado: con filas de la MISMA fecha, que es justo el caso de un pico de
+  -- trafico, la fila N+1 tiene "at" igual que las anteriores y la combinacion
+  -- se quedaba con el tope de antiguedad sin borrar nada. Medido: 300 filas
+  -- todas de hoy con tope 100 -> seguian 300.
+  --
+  -- Ademas "at" no distingue filas identicas, asi que no permite cortar por un
+  -- numero exacto. Se borra por identificador, que si es unico, y se conservan
+  -- las p_max_rows mas recientes apoyandose en el indice de "at".
+  --
+  -- Las filas con "at" nulo quedan fuera de la seleccion (NULLS LAST) y por
+  -- tanto nunca desplazan a una que si lo tiene.
+  -- ---------------------------------------------------------------------
+  IF (SELECT count(*) FROM audit_log) > p_max_rows THEN
+    DELETE FROM audit_log
+     WHERE id NOT IN (
+       SELECT id FROM audit_log
+        WHERE at IS NOT NULL
+        ORDER BY at DESC
+        LIMIT p_max_rows
+     );
+    GET DIAGNOSTICS v_removed_by_cap = ROW_COUNT;
+  END IF;
+
+  v_removed := v_removed_by_age + v_removed_by_cap;
+  RETURN v_removed;
+END
+$fn$;
+
+REVOKE ALL ON FUNCTION audit_prune(integer, bigint) FROM PUBLIC;
+`;
+
+// El orden importa: se declara DESPUES de los tres bloques de SQL.
+export const MIGRATIONS: readonly Migration[] = [
+  { id: '001_init', sql: initSql },
+  { id: '002_audit_retention', sql: auditRetentionSql },
+  { id: '003_audit_prune_fix', sql: auditPruneV2Sql },
+];
 
 export async function runMigrations(config: Config): Promise<MigrationResult[]> {
   return withSystem(config, async (tx) => {

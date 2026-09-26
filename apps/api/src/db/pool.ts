@@ -1,11 +1,18 @@
 import { Pool } from 'pg';
-import type { Config } from '../config.js';
 
 let pool: Pool | undefined;
 
-export function createPool(config: Config): Pool {
+/**
+ * Recibe la cadena de conexion y no el `Config` entero a proposito.
+ *
+ * El podador de la bitacora (`prune-audit.js`) solo necesita la base de
+ * datos, y si tomara el `Config` completo habria que darle el `AUTH_PEPPER`
+ * para que pasara la validacion. Un contenedor que no toca la tabla de
+ * usuarios no deberia poder ni leer el pepper.
+ */
+export function createPool(databaseUrl: string): Pool {
   return new Pool({
-    connectionString: config.databaseUrl,
+    connectionString: databaseUrl,
     application_name: 'securekey-api',
     max: 10,
     idleTimeoutMillis: 30_000,
@@ -16,8 +23,8 @@ export function createPool(config: Config): Pool {
   });
 }
 
-export function getPool(config: Config): Pool {
-  pool ??= createPool(config);
+export function getPool(databaseUrl: string): Pool {
+  pool ??= createPool(databaseUrl);
   return pool;
 }
 

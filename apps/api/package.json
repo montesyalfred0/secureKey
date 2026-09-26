@@ -9,6 +9,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "migrate": "node dist/db/migrate.js",
+    "prune": "node dist/db/prune-audit.js",
+    "invite": "node dist/scripts/invite.js",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:unit": "vitest run test/unit",

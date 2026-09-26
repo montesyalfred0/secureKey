@@ -201,19 +201,106 @@ Todo se ajusta en `.env` (plantilla en `.env.example`, generado por
 Si cambias el dominio o el puerto, actualiza tambien `APP_ORIGIN` y el
 `Caddyfile`.
 
-## Despliegue
+## Operacion diaria
 
-Esta configuracion sirve tal cual para uso personal o en una red de confianza. Para
-exponerla en Internet, antes de nada:
+```bash
+npm run logs              # API en vivo
+npm run ps                # estado
+npm run invite -- a@b.com # emitir una invitacion
+npm run backup            # volcado + verificacion de integridad
+npm run prune             # forzar una poda de audit_log
+```
 
-1. **Dominio real con certificado de una CA publica.** La CA interna de Caddy es
-   para `localhost`; en un dominio real hay que cambiar la directiva `tls`.
-2. **TLS terminado antes de Caddy** si hay un proxy o balanceador delante, para
-   que `request.ip` (y con el, el limite de tasa) sea real.
-3. **Copia de seguridad de PostgreSQL** cifra, y **cifrado del volumen** en reposo.
-4. Un limite de tasa por IP **de verdad util**: por defecto Caddy es el unico que
-   ve las IP reales, y eso solo es cierto si no hay otro proxy delante.
+Los access log de Caddy estan en un volumen con rotacion automatica (20 MB x 10
+ficheros). Para mirarlos:
 
-El orden importa mas de lo que parece: sin un dominio real con TLS de confianza,
-todo lo demas se puede hacer, pero cualquier acceso desde Internet seguira
-pareciendo sospechoso y la CSP no podra relajarse ni un milimetro.
+```bash
+docker compose exec caddy sh -c "tail -f /var/log/caddy/access.log"
+```
+
+Van en JSON, asi que se filtran con `jq`:
+
+```bash
+# IPs que mas fallan (primer indicio de un ataque)
+docker compose exec caddy sh -c \
+  "jq -r 'select(.status>=400) | .request.client_ip' /var/log/caddy/access.log \
+   | sort | uniq -c | sort -rn | head"
+```
+
+## Despliegue en una VPS
+
+Todo corre en Docker, asi que la VPS solo necesita Docker y un dominio.
+
+**Requisitos**
+
+- Dominio con registro `A` a la IP de la VPS. Let's Encrypt **no** emite
+  certificados para IPs desnudas.
+- Puertos **80 y 443** abiertos. El 80 lo necesita el desafio de Let's Encrypt.
+  Si tu proveedor lo bloquea, hay que pasar al desafio DNS-01.
+- Al menos **1 GB** de RAM (87 MB en reposo, con picos de scrypt de 16 MB).
+
+**Cambios en el `.env`**
+
+| Variable | A que |
+| --- | --- |
+| `APP_HOST` | `boveda.tudominio.com` (nuevo, sin esquema ni barra final) |
+| `APP_ORIGIN` | `https://boveda.tudominio.com` |
+| `ALLOWED_ORIGINS` | `https://boveda.tudominio.com` |
+| `REGISTRATION_MODE` | `invite` |
+
+Si se olvida `APP_ORIGIN` o `ALLOWED_ORIGINS`, el registro y el login devuelven
+**403** sin explicación: el hook `onRequest` rechaza cualquier `Origin` que no
+esté en la lista. Es el fallo mas probable de este despliegue, y conviene
+comprobarlo nada mas levantar.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+Cambios respecto al compose de desarrollo:
+
+- Caddy pide el certificado a **Let's Encrypt** solo (nada de `tls internal`, sin
+  aviso de seguridad en el navegador) y escucha en 443. El 80 queda reservado
+  para el desafio de la CA y la redireccion a HTTPS: la app nunca se sirve en
+  claro.
+- `prune` pasa a correr **cada hora** en vez de cada seis.
+- Se ajustan los limites de memoria y los parametros de Postgres
+  (`max_connections`, `shared_buffers`, `log_min_duration_statement`).
+
+**Comprobaciones tras el despliegue**
+
+```bash
+curl -I https://boveda.tudominio.com/          # 200, HSTS, CSP con wasm-unsafe-eval
+curl  https://boveda.tudominio.com/api/v1/health
+npm run test:http                             # 44 checks contra el TLS real
+npm run test:e2e                              # 35 checks del protocolo
+```
+
+**Backups**
+
+```bash
+npm run backup                 # vuelca y verifica integridad
+BACKUP_DIR=/mnt/nas npm run backup
+npm run restore backups/securekey-<fecha>.dump
+```
+
+`restore.sh` levanta un PostgreSQL aislado, restaura ahi y comprueba que la base
+resultante tiene las 4 tablas, la **RLS activa en las 4** y el rol `securekey_app`
+—que sin el, las politicas no se aplicarian. Solo cuando todo cuadra imprime
+como aplicarlo sobre la base real. Nunca restaura encima de la de produccion sin
+confirmacion: el volcado sobrescribe tablas enteras y no hay deshacer.
+
+Es **seguro almacenar** el volcado: `items` solo contiene blobs AEAD. Lo que si
+es sensible son los correos, los `auth_hash` y las IPs del `audit_log`. Si el
+destino no es de fiar, cifralo con `age` antes de subirlo.
+
+Conviene un backup **diario y automatico** (cron o systemd timer). Uno que solo se
+lanza a mano es un backup que no existe el dia que hace falta.
+
+### Si hay un proxy o balanceador delante de Caddy
+
+Caddy debe ser el unico que termine TLS, o `request.ip` sera la IP del proxy y el
+limite de tasa por IP dejara de ser util. Si el TLS se termina antes, hay que
+configurar tambien `trusted_proxies` en Caddy; con `trustProxy` acotado a rangos
+privados en la API, una cabecera `X-Forwarded-For` que llegue desde Internet se
+ignora y el limite cuenta por IP real.

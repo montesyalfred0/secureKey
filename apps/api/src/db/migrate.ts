@@ -11,7 +11,7 @@ async function main(): Promise<void> {
 
   for (let attempt = 1; attempt <= 30; attempt += 1) {
     try {
-      await getPool(config).query('SELECT 1');
+      await getPool(config.databaseUrl).query('SELECT 1');
       break;
     } catch (error) {
       if (attempt === 30) throw error;

@@ -12,17 +12,31 @@
  *   5. El AAD ata cada ciphertext a su fila, y el versionado optimista
  *      detecta ediciones concurrentes.
  *
+ * REGISTRO CERRADO POR INVITACION. Con `REGISTRATION_MODE=invite` (lo que se
+ * usa en un servidor publico) el registro exige un codigo valido, asi que este
+ * script necesita `INVITE_SECRET` para emitir uno por cada cuenta que crea.
+ *
+ *     docker run --rm \
+ *       --network securekey_edge \
+ *       -e API_URL=http://api:3000/api/v1 \
+ *       -e INVITE_SECRET=... \
+ *       securekey/api-dev node apps/api/test/e2e.mjs
+ *
+ * `npm run test:e2e` lo pasa desde el `.env`. Sin el, el script lo dice y sale
+ * con codigo 2, en vez de mostrar veinte fallos en cascada (sesion no creada,
+ * IDOR que no se puede comprobar) que no explican nada.
+ *
  * NOTA sobre los limites de tasa: el registro esta limitado a 5 cuentas por
- * hora y por IP, y este script crea 3. Dos ejecuciones seguidas sin que pase
- * tiempo fallarian con 429, y no es un fallo del producto sino del limite
- * funcionando. El contador vive en memoria del proceso, asi que
+ * hora y por IP, y este script crea 3. Dos ejecuciones seguidas fallarian con
+ * 429, y no es un fallo del producto sino del limite funcionando. El contador
+ * vive en memoria del proceso, asi que
  *
  *     docker compose restart api
  *
- * lo reinicia. El script detecta el 429 y lo dice, en vez de mostrar veinte
- * fallos en cascada que no explican nada.
+ * lo reinicia.
  */
 import { argon2id } from 'hash-wasm';
+import { createHmac } from 'node:crypto';
 
 const BASE = process.env['API_URL'] ?? 'http://api:3000/api/v1';
 const TE = new TextEncoder();
@@ -36,6 +50,21 @@ const ITEM_INFO_PREFIX = 'securekey/v1/item/';
 const toB64 = (bytes) => Buffer.from(bytes).toString('base64');
 const fromB64 = (value) => new Uint8Array(Buffer.from(value, 'base64'));
 const newId = () => crypto.randomUUID();
+
+// --- Codigos de invitacion -------------------------------------------------
+// Misma construccion que `issueInviteCode` en `src/crypto/server.ts`: firma
+// HMAC-SHA256 del payload, truncada a 32 caracteres. Se replica aqui para que
+// el script no dependa de compilar la API.
+const INVITE_SECRET = process.env['INVITE_SECRET'];
+
+function issueInviteCode(email, days = 30) {
+  const payload = Buffer.from(
+    JSON.stringify({ e: email.toLowerCase(), exp: Date.now() + days * 86_400_000 }),
+    'utf8',
+  ).toString('base64url');
+  const sig = createHmac('sha256', INVITE_SECRET).update(payload).digest('base64url').slice(0, 32);
+  return `skinv_${payload}.${sig}`;
+}
 
 let passed = 0;
 let failed = 0;
@@ -212,7 +241,18 @@ async function register(client, email, masterPassword) {
     authKey: toB64(authKey),
     vault: wrapped,
     kdf: pre.body.kdf,
+    // Solo se incluye si hay secreto. Con `REGISTRATION_MODE=open` sobra (el
+    // esquema lo acepta) y con `invite` es lo que abre la puerta.
+    ...(INVITE_SECRET === undefined ? {} : { inviteCode: issueInviteCode(email) }),
   });
+
+  if (res.status === 401 && INVITE_SECRET === undefined) {
+    bail(
+      '  >>> 401 en el REGISTRO: INVITE_SECRET no esta definido en el entorno.\n' +
+        '  >>> El registro esta cerrado por invitacion (REGISTRATION_MODE=invite).\n' +
+        '  >>> Pasa el secreto del .env:  npm run test:e2e',
+    );
+  }
 
   // El limite de registro es 5 por hora y por IP, y este script crea 3. Sin
   // este aviso, el 429 se manifestaria como cinco fallos en cascada (sesion no

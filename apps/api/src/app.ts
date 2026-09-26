@@ -26,9 +26,20 @@ export async function buildApp(config: Config): Promise<FastifyInstance> {
         censor: '[redactado]',
       },
     },
-    // Detras de Caddy: sin esto `request.ip` seria siempre la IP del proxy y
-    // el rate limiting seria inutil.
-    trustProxy: true,
+    // Detras de Caddy (y nginx): sin esto `request.ip` seria siempre la IP del
+    // proxy y el rate limiting seria inutil.
+    //
+    // NO es `trustProxy: true`. Eso significa "confia en cualquier
+    // X-Forwarded-For que llegue", y hoy funciona solo por dos casualidades:
+    // que Caddy sobrescribe la cabecera y que la API no tiene puerto publicado.
+    // En cuanto se publicase el puerto, o se anadiese un contenedor a la red
+    // `edge`, un atacante podria mandar su propio X-Forwarded-For y evadir el
+    // limite de tasa por completo.
+    //
+    // En su lugar se confia solo en rangos privados y loopback, que es
+    // exactamente donde viven los contenedores de Docker. Una cabecera
+    // enviada desde Internet no se cree, y `request.ip` cae al socket real.
+    trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
     bodyLimit: 256 * 1024,
     // En produccion se apagan las lineas de log por peticion: con el rate limit
     // global activo, un atacante genera cientos de entradas por minuto y el log

@@ -70,7 +70,7 @@ async function inTransaction<T>(
   begin: (client: PoolClient) => Promise<void>,
   fn: (tx: PoolClient) => Promise<T>,
 ): Promise<T> {
-  const client = await getPool(config).connect();
+  const client = await getPool(config.databaseUrl).connect();
   let released = false;
 
   try {

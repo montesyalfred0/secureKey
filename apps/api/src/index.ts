@@ -33,7 +33,7 @@ async function main(): Promise<void> {
   });
 
   // Fallamos rapido si la base de datos no responde al arrancar.
-  await getPool(config).query('SELECT 1');
+  await getPool(config.databaseUrl).query('SELECT 1');
 
   await app.listen({ host: config.host, port: config.port });
   app.log.info(

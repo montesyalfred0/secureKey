@@ -1,0 +1,105 @@
+# ===========================================================================
+# Caddy como unico punto de entrada - PRODUCCION.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Diferencias con el Caddyfile de desarrollo, y por que:
+#
+#   1. `tls internal` desaparece. Con un dominio real, Caddy pide el
+#      certificado a Let's Encrypt por su cuenta, lo renueva cada 30 dias y
+#      nadie tiene que instalar una CA en ningun equipo. El navegador ya
+#      confia en Let's Encrypt de serie, asi que no hay aviso de seguridad.
+#
+#   2. Escucha en :443 y tambien en :80, porque el desafio HTTP-01 de Let's
+#      Encrypt necesita el 80 abierto. El 80 solo sirve para la redireccion a
+#      HTTPS; nunca se sirve la app en claro.
+#
+#   3. La CSP pierde `ws://localhost:8443 wss://localhost:8443`, que era del
+#      HMR de Vite y no tiene sentido aqui.
+#
+# REQUISITOS, en este orden o no funciona:
+#   - Un dominio con un registro DNS `A` (o `AAAA`) apuntando a la IP de la
+#     VPS. Let's Encrypt NO emite certificados para IPs desnudas.
+#   - Puertos 80 y 443 abiertos en el firewall. Si el proveedor bloquea el 80,
+#     hace falta el desafio DNS-01: `tls { dns cloudflare {env.CF_API_TOKEN} }`.
+#   - `APP_ORIGIN` y `ALLOWED_ORIGINS` en el `.env` con el dominio nuevo. Si se
+#     olvidan, la API responde 403 al registro y al login: el hook `onRequest`
+#     rechaza cualquier `Origin` que no este en la lista.
+# ===========================================================================
+
+{
+	admin off
+	auto_https disable_redirects
+}
+
+# El dominio sale del entorno, para no tocar este fichero al cambiar de
+# host. Caddy lo lee de las variables del contenedor.
+{$APP_HOST} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), clipboard-read=(self), clipboard-write=(self)"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+
+		# Sin 'unsafe-inline' ni 'unsafe-eval'. 'wasm-unsafe-eval' es
+		# obligatorio: el Argon2id del cliente es WebAssembly y
+		# `WebAssembly.compile()` lo gobierna `script-src`. Sin esta fuente no
+		# se puede ni registrarse. Es mucho mas estrecho que 'unsafe-eval':
+		# solo habilita WebAssembly.compile/instantiate, no eval().
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; manifest-src 'self'"
+
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20mb
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		format json
+		level INFO
+	}
+
+	# Ver el comentario del Caddyfile de desarrollo: en Caddy 2.11 hace falta un
+	# log con nombre mas `log_name` para silenciar la sonda de salud.
+	log salud {
+		output discard
+	}
+
+	route {
+		handle /api/* {
+			# OJO: la sonda la responde la API de verdad. Servirla desde aqui
+			# ocultaria una base de datos caida, que es justo lo que un monitor
+			# viene a detectar.
+			@health path /api/v1/health
+			route @health {
+				log_name salud
+				reverse_proxy api:3000
+			}
+
+			reverse_proxy api:3000 {
+				header_up X-Forwarded-Proto https
+				# Se SOBRESCRIBE el X-Forwarded-For con la IP real en lugar de
+				# heredarlo; el API limita que rangos se creen (app.ts).
+				header_up X-Forwarded-For {remote_host}
+			}
+		}
+
+		handle {
+			reverse_proxy web:80 {
+				header_up X-Forwarded-Proto https
+			}
+		}
+	}
+}
+
+# Solo para el desafio de Let's Encrypt: 80 nunca sirve la app.
+http://{$APP_HOST} {
+	redir https://{host}{uri} permanent
+}
