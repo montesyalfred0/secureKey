@@ -59,7 +59,7 @@ Si ya tienes Node instalado, `package.json` tiene alias equivalentes (`npm test`
 `npm run dev`...). **No hacen falta y no son la via recomendada.**
 
 Para el ciclo completo de trabajo (editar, comprobar, commitear y desplegar en la
-VPS), ver [`docs/guia-desarrollo.md`](docs/guia-desarrollo.md).
+VPS), ver [`AGENTS.md`](AGENTS.md).
 
 ## Como funciona el cifrado
 
