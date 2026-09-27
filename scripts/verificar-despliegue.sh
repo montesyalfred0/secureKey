@@ -82,6 +82,32 @@ fi
 echo "  ACTUAL:   $ACTUAL"
 echo
 
+# Dice si un fichero cambia lo que ESTA CORRIENDO o no.
+#
+# Existe por un caso que se vio el mismo dia que se escribio este script: entre
+# el commit que corria y el que habia en el repositorio solo cambiaba este
+# script. La app era identica y aun asi el veredicto era "DESPLIEGUE
+# INCOMPLETO", porque solo comparaba hashes.
+#
+# Eso es un fallo de diseno, y de los que mas caros salen: una comprobacion que
+# se queja de mas acaba ignorandose, y el dia que avise de algo de verdad ya no
+# la lee nadie. Peor que no tenerla.
+#
+# FALLA EN CERRADO a proposito: lo que no aparece en ninguna de las dos listas
+# cuenta como codigo que SI despliega. Un fichero desconocido podria ser
+# importante, y ante la duda se avisa.
+afecta_a_lo_que_corre() {
+  case "$1" in
+    # Cambia el binario, la imagen o el servidor. Grito.
+    apps/*|packages/*|infra/*|package.json|package-lock.json) return 0 ;;
+    docker-compose.yml|docker-compose.*.yml|Dockerfile|*/Dockerfile) return 0 ;;
+    # Documentacion, utilidades y ejemplos. No cambia nada de lo que sirve.
+    scripts/*|docs/*|*.md|.env.example|.gitignore|.gitattributes|LICENSE) return 1 ;;
+    # Desconocido: se asume que importa.
+    *) return 0 ;;
+  esac
+}
+
 # --- 3. El veredicto -------------------------------------------------------
 
 if [ "$ACTUAL" = "desconocido" ]; then
@@ -99,25 +125,58 @@ if [ "$ACTUAL" = "desconocido" ]; then
 fi
 
 if [ "$ACTUAL" != "$ESPERADO" ]; then
-  mal "LO QUE CORRE NO ES LO QUE HAY EN EL REPOSITORIO"
-  echo
-  echo "  corre    $ACTUAL"
-  echo "  hay      $ESPERADO"
-  echo
-  echo "  O no reconstruiste despues del ultimo commit, o reconstruiste solo"
-  echo "  una parte. Lo habitual es esto ultimo: hay varios servicios que"
-  echo "  salen del mismo codigo y 'build <servicio>' solo rehace ese."
-  echo
-  echo "  Se arregla reconstruyendolo TODO, sin nombre de servicio:"
-  echo "    APP_COMMIT=\$(git rev-parse --short HEAD) \\"
-  echo "    docker compose -f docker-compose.yml -f docker-compose.prod.yml build"
-  echo "    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d"
-  echo
-  echo "=== VEREDICTO: DESPLIEGUE INCOMPLETO ==="
-  exit 1
-fi
+  # Que cambio entre el commit que corre y el que hay aqui. Si el commit que
+  # corre no esta en el repositorio (por ejemplo tras un force-push, o una
+  # rama reescrita), `git diff` falla y no se puede saber: se avisa entero.
+  CAMBIAN=()
+  while IFS= read -r linea; do
+    [ -n "$linea" ] && CAMBIAN+=("$linea")
+  done < <(git diff --name-only "$ACTUAL" "$ESPERADO" 2>/dev/null || true)
 
-ok "lo que corre es exactamente el commit del repositorio ($ESPERADO)"
+  RELEVANTES=()
+  COSMETICOS=()
+  for f in ${CAMBIAN[@]+"${CAMBIAN[@]}"}; do
+    if afecta_a_lo_que_corre "$f"; then RELEVANTES+=("$f"); else COSMETICOS+=("$f"); fi
+  done
+
+  if [ "${#RELEVANTES[@]}" -eq 0 ] && [ "${#COSMETICOS[@]}" -gt 0 ]; then
+    # CASO BUENO: los commits difieren, pero lo que corre es correcto.
+    ok "la aplicacion esta al dia"
+    aviso "lo que corre es $ACTUAL y el repositorio esta en $ESPERADO,"
+    aviso "pero entre los dos SOLO cambian ficheros que no se despliegan:"
+    for f in ${COSMETICOS[@]+"${COSMETICOS[@]}"}; do aviso "    $f"; done
+    aviso "no hace falta reconstruir. Cuando quieras igualarlos, un rebuild."
+    echo
+  else
+    mal "LO QUE CORRE NO ES LO QUE HAY EN EL REPOSITORIO"
+    echo
+    echo "  corre    $ACTUAL"
+    echo "  hay      $ESPERADO"
+    if [ "${#RELEVANTES[@]}" -gt 0 ]; then
+      echo
+      echo "  Estos ficheros SI cambian lo que se sirve:"
+      for f in ${RELEVANTES[@]+"${RELEVANTES[@]}"}; do echo "    $f"; done
+    elif [ "${#CAMBIAN[@]}" -eq 0 ]; then
+      echo
+      echo "  No se ha podido comparar que cambio entre los dos commits."
+      echo "  Puede que el commit que corre no este en este repositorio."
+    fi
+    echo
+    echo "  O no reconstruiste despues del ultimo commit, o reconstruiste solo"
+    echo "  una parte. Lo habitual es esto ultimo: hay varios servicios que"
+    echo "  salen del mismo codigo y 'build <servicio>' solo rehace ese."
+    echo
+    echo "  Se arregla reconstruyendolo TODO, sin nombre de servicio:"
+    echo "    APP_COMMIT=\$(git rev-parse --short HEAD) \\"
+    echo "    docker compose -f docker-compose.yml -f docker-compose.prod.yml build"
+    echo "    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d"
+    echo
+    echo "=== VEREDICTO: DESPLIEGUE INCOMPLETO ==="
+    exit 1
+  fi
+else
+  ok "lo que corre es exactamente el commit del repositorio ($ESPERADO)"
+fi
 
 # --- 4. Avisos que no rompen nada pero sehzan de ver -----------------------
 
