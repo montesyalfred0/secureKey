@@ -31,16 +31,116 @@ la seccion "Empezar" del README.
 
 ---
 
-## 2. El ciclo de trabajo
+## 2. Del portatil a la VPS: el ciclo completo
 
-### Levantar en modo desarrollo
+Este es el camino completo de un cambio, de principio a fin. **Cada bloque se
+ejecuta en una maquina distinta**, y confundirlas es el error mas comun:
+
+| Bloque | Donde |
+| --- | --- |
+| 1 a 4 | **tu portatil** |
+| 5 a 7 | **la VPS** (`ssh root@62.171.157.89`) |
+
+---
+
+### EN TU PORTATIL
+
+**1. Partir de la version desplegada**, para no subir cambios a medias que
+alguien ya tiene en produccion:
+
+```bash
+git pull
+```
+
+**2. Levantar el entorno y hacer el cambio**
+
+```bash
+docker compose up --build -d --wait
+```
+
+Abre https://localhost:8443 y edita lo que necesites. Para trabajar con recarga
+en caliente, en otra terminal:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
-A diferencia de `up -d`, esto **no** se detach: es para tener el log delante. El
-frontend recarga solo los cambios (HMR) y la API reinicia sola.
+**3. Comprobar que esta verde**
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.test.yml --profile test run --rm test
+```
+
+Ojo: el `e2e` y los checks HTTP usan la imagen `securekey/api-dev`, que **no**
+reconstruye `docker compose build`. Si tocaste algo que esos tests tocan:
+
+```bash
+docker build -f apps/api/Dockerfile --target dev -t securekey/api-dev .
+```
+
+Ver "La imagen vieja" en la seccion 4.
+
+**4. Guardar y subir**
+
+```bash
+git add -A
+git commit -m "descripcion breve de lo que cambia"
+git push origin main
+```
+
+---
+
+### EN LA VPS
+
+**5. Entrar y situarte en el directorio del proyecto**
+
+```bash
+ssh root@62.171.157.89
+cd /opt/apps/securekey
+```
+
+**6. Traer los cambios y reconstruir**
+
+```bash
+git pull
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+Dos comandos, y en ese orden. El `--build` **no es opcional**: las imagenes se
+construyen aqui, no en un registro. Sin el, compose reutiliza la imagen anterior
+y tu cambio de codigo no llega a ejecutarse. Es el motivo numero uno de "lo he
+subido y no se ve".
+
+**7. Comprobar que salio bien**
+
+```bash
+curl -I https://securekey.yal99.com/     # 200, HSTS, CSP con wasm-unsafe-eval
+curl  https://securekey.yal99.com/api/v1/health
+docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
+```
+
+Y que **tus otras webs siguen en pie**, que comparten el mismo nginx:
+
+```bash
+curl -s -o /dev/null -w "jwaddresses: %{http_code}\n" https://jwaddresses.yal99.com/
+curl -s -o /dev/null -w "paulina-yalfred: %{http_code}\n" https://paulina-yalfred.yal99.com/
+```
+
+Los dos deben dar 200. Si uno falla, mira la seccion 5.
+
+---
+
+### Los tres errores mas frecuentes
+
+| Error | Que pasa |
+| --- | --- |
+| `git pull` en el portatil y `git push` en la VPS | La VPS no tiene commits propios. Push desde ahi falla o no hace nada. El push va **siempre** desde el portatil. |
+| Olvidar el `--build` en el paso 6 | `git pull` descarga el codigo pero los contenedores siguen con la imagen vieja. `docker compose ps` lo delata: no cambia el tiempo de creacion. |
+| Cambiar el puerto 443 en algo que no sea Caddy | El 443 lo tiene SecureKey desde el despliegue. Ver `despliegue-vps.md` antes de tocar nginx. |
+
+---
+
+## 3. Detalle del trabajo diario
 
 ### Comprobar antes de commitear
 
@@ -60,55 +160,10 @@ docker run --rm --network container:securekey-caddy-1 \
 
 Los dos ultimos necesitan el stack levantado (`up -d --wait`). El primero no.
 
-Ojo: el `e2e` y el `http` usan la imagen **`securekey/api-dev`**, que no es la
-misma que construye `docker compose build`. Ver "La imagen vieja" mas abajo,
-que es la trampa mas.caracteristica de este proyecto.
-
 ### Si tocaste criptografia o el protocolo
 
 Vuelve a ejecutar el `e2e`: comprueba que un cliente y el servidor siguen
 hablando el mismo idioma. Es el unico test que cubre el protocolo entero.
-
-### Commit y subir
-
-```bash
-git add -A
-git commit -m "..."
-git push origin main
-```
-
----
-
-## 3. Desplegar en la VPS
-
-```bash
-cd /opt/apps/securekey
-git pull
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-```
-
-Eso es todo. Tres pasos, siempre en ese orden.
-
-### Por que `--build` no es opcional
-
-Las imagenes se construyen **en la VPS**, no en un registro. Sin `--build`,
-compose reutiliza la imagen anterior y tu cambio de codigo no llega a ejecutarse.
-El primer build es lento (compila Caddy con Go); los siguientes, segundos.
-
-### Comprobar que salio bien
-
-```bash
-curl -I https://securekey.yal99.com/          # 200, HSTS, CSP con wasm-unsafe-eval
-curl  https://securekey.yal99.com/api/v1/health
-docker compose -f docker-compose.yml -f docker-compose.prod.yml logs caddy | tail -20
-docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
-```
-
-Y desde fuera, que es la unica prueba que de verdad cuenta:
-
-```bash
-curl -I https://securekey.yal99.com/
-```
 
 ---
 
