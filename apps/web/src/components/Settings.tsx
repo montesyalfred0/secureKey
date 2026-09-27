@@ -23,6 +23,36 @@ export function SettingsModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Borrado de la cuenta: dialogo aparte porque pide la contrasena maestra.
+  const [borrarAbierto, setBorrarAbierto] = useState(false);
+  const [borrarPass, setBorrarPass] = useState('');
+  const [borrarBusy, setBorrarBusy] = useState(false);
+  const [borrarError, setBorrarError] = useState<string | null>(null);
+
+  const cerrarBorrado = (): void => {
+    if (borrarBusy) return;
+    setBorrarAbierto(false);
+    setBorrarPass('');
+    setBorrarError(null);
+  };
+
+  async function confirmarBorrado(): Promise<void> {
+    setBorrarError(null);
+    setBorrarBusy(true);
+    try {
+      await store.deleteAccount(borrarPass);
+      setBorrarAbierto(false);
+      setBorrarPass('');
+      onClose();
+    } catch (caught) {
+      setBorrarError(
+        caught instanceof SecureKeyError ? caught.message : 'No se pudo eliminar la cuenta',
+      );
+    } finally {
+      setBorrarBusy(false);
+    }
+  }
+
   const reset = (): void => {
     setCurrent('');
     setNext('');
@@ -166,7 +196,78 @@ export function SettingsModal({
             Cerrar sesion
           </Button>
         </div>
+
+        <hr class="settings__rule" />
+
+        <div class="settings__block">
+          <h3 class="settings__title">
+            <Icon name="alert" size={16} />
+            Zona de peligro
+          </h3>
+          <p class="settings__text">
+            Eliminar la cuenta borra del servidor tu usuario, todas tus credenciales y tus
+            sesiones. No queda copia en ningun sitio y <strong>no hay forma de recuperarlas</strong>:
+            ni siquiera el administrador de este servidor puede ayudarte, porque nunca ha podido
+            leerlas.
+          </p>
+          <Button
+            tone="danger"
+            icon="alert"
+            onClick={() => {
+              setBorrarAbierto(true);
+              setBorrarPass('');
+              setBorrarError(null);
+            }}
+          >
+            Eliminar mi cuenta
+          </Button>
+        </div>
       </section>
+
+      <Modal
+        open={borrarAbierto}
+        title="Eliminar la cuenta"
+        onClose={cerrarBorrado}
+        width="sm"
+        initialFocus="[data-autofocus]"
+        footer={
+          <>
+            <Button tone="secondary" onClick={cerrarBorrado} disabled={borrarBusy}>
+              Cancelar
+            </Button>
+            <Button
+              tone="danger"
+              busy={borrarBusy}
+              disabled={borrarPass.length === 0}
+              onClick={() => void confirmarBorrado()}
+            >
+              Eliminar para siempre
+            </Button>
+          </>
+        }
+      >
+        <div class="settings__block">
+          <Alert tone="danger" title="Esto no se puede deshacer">
+            Se borran {store.items.length === 1 ? 'tu credencial' : `tus ${store.items.length} credenciales`}{' '}
+            y tu cuenta. Vuelve a escribir tu contrasena maestra para confirmar.
+          </Alert>
+
+          <Field
+            label="Contrasena maestra"
+            type="password"
+            icon="lock"
+            placeholder="••••••••••••"
+            autoComplete="current-password"
+            revealable
+            monospace
+            value={borrarPass}
+            onInput={(event) => setBorrarPass((event.currentTarget as HTMLInputElement).value)}
+            hint="Se pide a proposito: con la sesion abierta bastaria, y entonces una cookie robada podria borrar la boveda de cualquiera."
+          />
+
+          {borrarError !== null && <Alert tone="danger">{borrarError}</Alert>}
+        </div>
+      </Modal>
     </Modal>
   );
 }

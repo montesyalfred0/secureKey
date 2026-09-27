@@ -278,6 +278,32 @@ export function useSecureKey() {
     [],
   );
 
+  // --- Borrado de la cuenta -------------------------------------------------
+  //
+  // Vuelve a pedir la contrasena maestra y manda su authKey. El servidor lo
+  // exige, y no es un capricho: con la sesion abierta bastaria, y entonces una
+  // cookies. Es lo que impide que una cookie robada baste para destruir la boveda
+  // de alguien: sin contrasena maestra, no se puede.
+  const deleteAccount = useCallback(async (masterPassword: string) => {
+    const mail = emailRef.current;
+    if (!mail) throw new SecureKeyError('No hay sesion abierta');
+
+    const pre = await api.prelogin(mail);
+    const masterKey = await deriveMasterKey(masterPassword, mail, pre.kdf);
+    const { authKey } = await deriveAccountKeys(masterKey, mail);
+
+    await api.deleteAccount({ authKey: toB64(authKey) });
+
+    // La clave de boveda ya no sirve de nada: el servidor no tiene la fila y
+    // nadie la tiene. Se borra de memoria en vez de dejarla por si acaso.
+    wipe(vaultKeyRef.current);
+    vaultKeyRef.current = null;
+    setItems([]);
+    emailRef.current = '';
+    setPhase('auth');
+    toast.success('Cuenta eliminada. Tus credenciales se han borrado del servidor.');
+  }, []);
+
   // --- Boveda descifrada --------------------------------------------------
 
   const [items, setItems] = useState<DecryptedItem[]>([]);
@@ -349,6 +375,7 @@ export function useSecureKey() {
     lock,
     logout,
     changeMasterPassword,
+    deleteAccount,
     items,
     itemsBusy,
     itemsError,

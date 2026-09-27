@@ -59,7 +59,12 @@ const envSchema = z.object({
    */
   RATE_LIMIT_GLOBAL_MAX: z.coerce.number().int().min(1).max(1_000_000).default(300),
   RATE_LIMIT_PRELOGIN_MAX: z.coerce.number().int().min(1).max(1_000_000).default(30),
-  RATE_LIMIT_REGISTER_MAX: z.coerce.number().int().min(1).max(1_000_000).default(5),
+  // 2 por hora y por IP. Con el registro abierto en una demo, 5 dejo pasar a
+  // mas de un persona en una tarde. Dos sigue siendo de sobra para un
+  // visitante real y corta antes a un automatizado con una sola IP. Ojo: el
+  // limite es POR IP, y las IPs son baratas, asi que esto frena al curioso, no
+  // al que va con una lista de proxies.
+  RATE_LIMIT_REGISTER_MAX: z.coerce.number().int().min(1).max(1_000_000).default(2),
   RATE_LIMIT_LOGIN_MAX: z.coerce.number().int().min(1).max(1_000_000).default(10),
   RATE_LIMIT_UNLOCK_MAX: z.coerce.number().int().min(1).max(1_000_000).default(10),
 

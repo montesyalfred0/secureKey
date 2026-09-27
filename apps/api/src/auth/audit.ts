@@ -19,6 +19,12 @@ export type AuditAction =
   | 'auth.logout'
   | 'auth.rekey'
   | 'auth.master_password.changed'
+  // Borrado de la cuenta. `deleted` es la unica accion que sobrevive a la
+  // cuenta: `audit_log` no cuelga de `users`, asi que queda constancia de que
+  // existio sin conservar nada suyo. `fail` es el intento con contrasena
+  // maestra incorrecta, que es justamente el caso que de verdad avisa.
+  | 'auth.account.deleted'
+  | 'auth.delete.fail'
   | 'items.create'
   | 'items.read'
   | 'items.update'

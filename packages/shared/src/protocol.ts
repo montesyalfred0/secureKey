@@ -131,6 +131,22 @@ export const loginRequestSchema = z.object({
 });
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 
+/**
+ * Borrado de la cuenta entera.
+ *
+ * Pide el `authKey` de nuevo a proposito, aunque la sesion ya este
+ * autenticada. Es lo que impide que una cookie de sesion robada sirva para
+ * destruir la boveda: con esto hace falta la contrasena maestra, que es
+ * precisamente lo que un atacante con la sesion NO tiene.
+ *
+ * Sin esto, la cookie de sesion bastaria para destruir la boveda: eso ya no
+ * seria robo, seria destruccion.
+ */
+export const deleteAccountRequestSchema = z.object({
+  authKey: b64,
+});
+export type DeleteAccountRequest = z.infer<typeof deleteAccountRequestSchema>;
+
 export const loginResponseSchema = z.object({
   user: z.object({ id: z.string().uuid(), email: z.string() }),
   /** Envuelve la clave de boveda. `null` solo en cuentas recien creadas. */

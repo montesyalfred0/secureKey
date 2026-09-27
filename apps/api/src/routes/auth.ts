@@ -19,6 +19,7 @@ import {
   preloginRequestSchema,
   rekeyRequestSchema,
   registerRequestSchema,
+  deleteAccountRequestSchema,
   unlockRequestSchema,
   changeMasterPasswordRequestSchema,
   wrappedKeySchema,
@@ -27,12 +28,18 @@ import {
   type WrappedKey,
 } from '@securekey/shared';
 import type { Config } from '../config.js';
-import { withSystem } from '../db/withUser.js';
+import { withSystem, withUser } from '../db/withUser.js';
 import { generateSalt, hashAuthKey, safeEqual, verifyInviteCode } from '../crypto/server.js';
 import { createSession, clearSessionCookies, destroySession } from '../auth/session.js';
 import { audit } from '../auth/audit.js';
 import { attachAuth, currentUser, requireAuth } from '../http/context.js';
-import { badRequest, conflict, tooManyRequests, unauthorized } from '../http/errors.js';
+import {
+  badRequest,
+  conflict,
+  notFound,
+  tooManyRequests,
+  unauthorized,
+} from '../http/errors.js';
 
 type AuthUserRow = {
   id: string;
@@ -426,7 +433,58 @@ export async function authRoutes(app: FastifyInstance, opts: { config: Config })
   });
 
   // ---------------------------------------------------------------------
-  // 7. Logout.
+  // 7. Borrado de la cuenta.
+  // ---------------------------------------------------------------------
+  //   Sin esto, un registro de porfolio se llena de cuentas que nadie puede
+  //   quitar, y el usuario que se registra y se arrepiente no tiene forma de
+  //   borrar lo suyo. Es tambien el derecho de supresion: en mucho de Europa es
+  //   una obligacion legal, y en un gestor de contrasenas tiene una consecuencia
+  //   incomoda: hay que poder BORRAR credenciales ajenas sin poder LEERLAS.
+  //   Aqui es trivial por construccion, porque el servidor nunca las leyo.
+  //
+  //   SIN limite de tasa a proposito, y conviene entender por que: el unico que
+  //   puede borrarla es el dueno de la sesion, y solo puede borrar SU cuenta, una
+  //   vez en su vida. Un limite por IP aqui no protege nada que la contrasena
+  //   maestra no proteja ya, y estorba en cuanto alguien prueba el flujo. La
+  //   barrera que importa es la reautenticacion de mas abajo.
+  app.post(
+    '/auth/delete-account',
+    { preHandler: requireAuth(config) },
+    async (request, reply) => {
+      const body = parse(deleteAccountRequestSchema, request);
+      const auth = currentUser(request);
+      const user = await findUser(config, normalizeEmail(auth.email));
+      if (!user || user.id !== auth.userId) throw unauthorized('Sesion no valida');
+
+      // Reautenticacion. Una sesion robada no basta para destruir la boveda.
+      if (!(await verifyAuthKey(config, user, body.authKey))) {
+        await audit(config, { userId: user.id, action: 'auth.delete.fail', request });
+        throw unauthorized('Contrasena maestra incorrecta');
+      }
+
+      // `items` y `sessions` cuelgan de `users` con ON DELETE CASCADE, asi que
+      // una sola fila se lleva la cuenta entera. Y va dentro de `withUser` a
+      // proposito: la politica RLS de `users` es FOR ALL sobre
+      // `id = app_user_id()`, asi que el borrado solo es posible sobre la
+      // propia fila. No hace falta una funcion SECURITY DEFINER nueva, que es
+      // siempre lo que se quiere.
+      const borrado = await withUser(config, auth.userId, async (tx) => {
+        const res = await tx.query('DELETE FROM users WHERE id = $1 RETURNING id', [auth.userId]);
+        return res.rowCount ?? 0;
+      });
+      if (borrado === 0) throw notFound('Cuenta no encontrada');
+
+      // La bitacora sobrevive: `audit_log` no cuelga de `users` a proposito,
+      // para que quede constancia de que existio la cuenta. Es la unica parte
+      // que se conserva, y no contiene ninguna credencial.
+      await audit(config, { userId: null, action: 'auth.account.deleted', request });
+      clearSessionCookies(reply);
+      return reply.send({ ok: true });
+    },
+  );
+
+  // ---------------------------------------------------------------------
+  // 8. Logout.
   // ---------------------------------------------------------------------
   app.post('/auth/logout', { preHandler: requireAuth(config) }, async (request, reply) => {
     const auth = currentUser(request);
@@ -437,7 +495,7 @@ export async function authRoutes(app: FastifyInstance, opts: { config: Config })
   });
 
   // ---------------------------------------------------------------------
-  // 8. Sesion actual. En el arranque sirve para saber si hay que desbloquear:
+  // 9. Sesion actual. En el arranque sirve para saber si hay que desbloquear:
   //    las cookies sobreviven a un recargado, la clave de boveda no.
   // ---------------------------------------------------------------------
   app.get('/session', async (request, reply) => {

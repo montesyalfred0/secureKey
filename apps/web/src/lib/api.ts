@@ -147,6 +147,17 @@ export async function logout(): Promise<void> {
   await request('POST', '/auth/logout');
 }
 
+/**
+ * Borra la cuenta y toda la boveda.
+ *
+ * Manda el `authKey` derivado de la contrasena maestra aunque la sesion ya este
+ * abierta: el servidor lo exige para que una cookie robada no baste para
+ * destruir la boveda de alguien.
+ */
+export async function deleteAccount(input: { authKey: string }): Promise<void> {
+  await request('POST', '/auth/delete-account', input);
+}
+
 export async function currentSession(): Promise<SessionResponse> {
   const body = await request<unknown>('GET', '/session');
   return sessionResponseSchema.parse(body);
