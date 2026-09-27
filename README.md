@@ -51,12 +51,15 @@ propia interfaz lo avisa en vez de fallar en silencio.
 | `docker compose down -v` | Para **y borra** el volumen de PostgreSQL |
 | `docker compose --profile test run --rm test` | Typecheck + 249 tests (levanta su propia base de datos de pruebas) |
 | `docker run --rm --network securekey_edge -e API_URL=http://api:3000/api/v1 securekey/api-dev node apps/api/test/e2e.mjs` | El protocolo completo contra el stack ya levantado (35 checks) |
-| `docker run --rm --network container:securekey-caddy-1 -e NODE_TLS_REJECT_UNAUTHORIZED=0 -e APP_URL=https://localhost:8443 securekey/api-dev node apps/web/test/http-checks.mjs` | Cabeceras, CSP y assets tal como los recibe un navegador (37 checks) |
+| `docker run --rm --network container:securekey-caddy-1 -e NODE_TLS_REJECT_UNAUTHORIZED=0 -e APP_URL=https://localhost:8443 securekey/api-dev node apps/web/test/http-checks.mjs` | Cabeceras, CSP y assets tal como los recibe un navegador (44 checks) |
 | `docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build` | Modo desarrollo: HMR en el frontend y `tsx watch` en la API |
 | `docker run --rm -v .\scripts\bundle-size.sh:/size.sh:ro securekey/web:latest sh /size.sh` | Informe del tamano del bundle |
 
 Si ya tienes Node instalado, `package.json` tiene alias equivalentes (`npm test`,
 `npm run dev`...). **No hacen falta y no son la via recomendada.**
+
+Para el ciclo completo de trabajo (editar, comprobar, commitear y desplegar en la
+VPS), ver [`docs/guia-desarrollo.md`](docs/guia-desarrollo.md).
 
 ## Como funciona el cifrado
 
