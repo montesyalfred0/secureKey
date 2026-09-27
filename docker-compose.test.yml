@@ -96,6 +96,13 @@ services:
       - ./apps/web:/app/apps/web
       - ./packages:/app/packages
       - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      # Para la prueba que cruza el .env.example con los compose: una variable
+      # documentada que no aparece en ningun compose no llega al contenedor y es
+      # un ajuste que no hace nada. Montadas en solo lectura.
+      - ./.env.example:/app/.env.example:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.prod.yml:/app/docker-compose.prod.yml:ro
+      - ./docker-compose.test.yml:/app/docker-compose.test.yml:ro
     networks:
       - backend
     restart: "no"
