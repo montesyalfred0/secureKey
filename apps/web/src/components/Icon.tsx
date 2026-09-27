@@ -12,13 +12,18 @@ const PATHS = {
   lock: 'M7 11V8a5 5 0 0 1 10 0v3M5 11h14a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1Zm7 4v2',
   unlock: 'M7 11V8a5 5 0 0 1 9.6-2M5 11h14a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1Zm7 4v2',
   shield: 'M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3Zm-2.5 8.5L11 13l3.5-3.5',
-  // Llave de arco completo, con su ojo y dos dientes cuadrados.
+  // Llave de arco perfecto y corona en escalera.
   //
-  // La anterior dibujaba el aro con un arco mayor (`a4 4 0 1 1`) que cerraba
-  // descentrado, y luego un vástago en 45 grados que no seguia la linea de los
-  // dientes. De lejos no parecia una llave: parecia un bulto con un muescon.
-  // Esta es la de siempre, y se lee al instante al lado del candado y el escudo.
-  key: 'M15.5 7.5a4.5 4.5 0 1 0-4.2 4.5h-.3L4 19v1h3v-2h2v-2h2l1.6-1.6A4.5 4.5 0 0 1 15.5 7.5Zm-2.2 2.2a1.1 1.1 0 1 1 0-2.2 1.1 1.1 0 0 1 0 2.2Z',
+  // El metodo es el del engranaje de mas abajo: un circulo de verdad (dos
+  // semicirculos del mismo radio) y rectas, sin un solo arco mayor de radio
+  // distinto. Los dos intentos anteriores fallaban por eso, no por las medidas:
+  // usaban `a4 4 0 1 1` y `a4.5 4.5 0 1 0` para el aro, que no cierran y
+  // dejan el vástago en un angulo que no sigue la linea de los dientes. De
+  // lejos ningun de los dos se leia como llave.
+  //
+  // Aqui el aro es un circulo de radio 6.5 y la corona baja en escalera, que es
+  // como se dibuja una llave de verdad y se lee al instante.
+  key: 'M2.6 17.4A2 2 0 0 0 2 18.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8a6.5 6.5 0 1 0-4-4zM16.5 7.5h.01',
   plus: 'M12 5v14M5 12h14',
   copy: 'M9 9V6a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-3M6 9h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1Z',
   eye: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Zm9.5 2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z',
