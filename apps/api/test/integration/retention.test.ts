@@ -12,6 +12,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { closeDatabase, createTestApp, withAdmin } from '../helpers.js';
+import { withSystem } from '../../src/db/withUser.js';
 import type { Config } from '../../src/config.js';
 
 let config: Config;
@@ -216,30 +217,72 @@ describe('robustez', () => {
 });
 
 describe('permisos de audit_prune', () => {
-  it('el rol de la aplicacion NO puede ejecutarla', async () => {
-    // Lo que importa: `securekey_app` es el rol que usa la API, y la API no
-    // debe poder borrar la bitacora. Se comprueba que no tiene EXECUTE.
-    //
-    // Se consulta `has_function_privilege` en vez de parsear `proacl`: el
-    // formato ACL de Postgres es una lista con sintaxis propia
-    // (`{=X/securekey,=X/otro}`) y compararla como texto es fragil.
+  // Hay un rol y el podador usa otro, y por eso el permiso se concedio al
+  // equivocado durante meses.
+  //
+  // Lo que hay que distinguir:
+  //
+  //   securekey      rol propietario (crea las tablas y las funciones)
+  //   securekey_app  GRUPO. Es dueno de los objetos y donde viven las reglas RLS
+  //   securekey_api  USUARIO, miembro de securekey_app. Es con el que entra la
+  //                 API y tambien el servicio `prune`
+  //
+  // El `GRANT` de la migracion 003 decia "TO CURRENT_USER", que en el momento de
+  // migrar es `securekey`. El podador entra como `securekey_api`, que no es
+  // miembro de `securekey`, y se llevaba un `permission denied` en cada pasada
+  // sin que nada lo indicara, porque el script salia con codigo 0.
+  //
+  // El test que habia antes comprobaba `securekey_app` y por eso pasaba: el
+  // permiso no estaba en ninguna de las dos, asi que la afirmacion era cierta
+  // por casualidad y no cubria el caso real. Comprobar el rol que el podador
+  // usa de verdad es lo que habria detectado el fallo.
+
+  it('el rol con el que entra el podador PUEDE ejecutarla', async () => {
+    const rows = await withAdmin(config, async (tx) => {
+      const res = await tx.query<{ puede: boolean }>(
+        `SELECT has_function_privilege('securekey_api', 'audit_prune(integer, bigint)', 'EXECUTE') AS puede`,
+      );
+      return res.rows;
+    });
+    expect(rows[0]?.puede).toBe(true);
+  });
+
+  it('y la llamada funciona de verdad, no solo el permiso', async () => {
+    // Un permiso puede estar concedido y la llamada fallar por cualquier otra
+    // cosa. Esta es la comprobacion que de verdad importa: la de que el podador,
+    // con SU credencial, es capaz de podar.
+    await fillAudit(12, 200);
+    expect(await count()).toBe(12);
+
+    const conRolDelPodador = await withSystem(config, async (tx) => {
+      const res = await tx.query<{ audit_prune: string }>(
+        'SELECT audit_prune($1::integer, $2::bigint) AS audit_prune',
+        [30, 500],
+      );
+      return res.rows;
+    });
+    expect(Number(conRolDelPodador[0]?.audit_prune ?? 0)).toBe(12);
+    expect(await count()).toBe(0);
+  });
+
+  it('el permiso va al grupo, no al usuario, para que aguante a quien se anada luego', async () => {
     const rows = await withAdmin(config, async (tx) => {
       const res = await tx.query<{ puede: boolean }>(
         `SELECT has_function_privilege('securekey_app', 'audit_prune(integer, bigint)', 'EXECUTE') AS puede`,
       );
       return res.rows;
     });
-    expect(rows[0]?.puede).toBe(false);
+    expect(rows[0]?.puede).toBe(true);
   });
 
-  it('pero el rol propietario si', async () => {
+  it('PUBLIC no tiene permiso', async () => {
     const rows = await withAdmin(config, async (tx) => {
       const res = await tx.query<{ puede: boolean }>(
-        `SELECT has_function_privilege(CURRENT_USER, 'audit_prune(integer, bigint)', 'EXECUTE') AS puede`,
+        `SELECT has_function_privilege('public', 'audit_prune(integer, bigint)', 'EXECUTE') AS puede`,
       );
       return res.rows;
     });
-    expect(rows[0]?.puede).toBe(true);
+    expect(rows[0]?.puede).toBe(false);
   });
 
   it('esta marcada SECURITY DEFINER con search_path fijo', async () => {

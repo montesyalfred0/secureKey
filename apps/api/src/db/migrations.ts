@@ -526,12 +526,37 @@ REVOKE ALL ON FUNCTION admin_set_app_password(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION admin_set_app_password(text) TO CURRENT_USER;
 `;
 
+/**
+ * Arregla el permiso de `audit_prune`, que la 003 concedio al rol equivocado.
+ *
+ * El fallo: la 003 hacia
+ *
+ *     GRANT EXECUTE ON FUNCTION audit_prune(integer, bigint) TO CURRENT_USER;
+ *
+ * `CURRENT_USER` en el momento de migrar es el rol de migracion (`securekey`),
+ * no el rol con el que entra el podador. El servicio `prune` conecta como
+ * `securekey_api`, que es miembro de `securekey_app` y de nada mas, asi que se
+ * llevaba un `permission denied for function audit_prune` en cada pasada.
+ *
+ * Como el podador sale con codigo 0 aunque no pode nada, el contenedor
+ * `prune` se quedaba en "healthy" sin hacer nada y el unico rastro era una
+ * linea en el log. La defensa existia y no funcionaba, que es peor que no
+ * tenerla.
+ *
+ * El permiso va al GRUPO `securekey_app`, no a `securekey_api`: asi funciona
+ * para el rol actual y para cualquiera que se anada manana sin tocar aqui.
+ */
+const auditPruneGrantSql = String.raw`
+GRANT EXECUTE ON FUNCTION audit_prune(integer, bigint) TO securekey_app;
+`;
+
 // El orden importa: se declara DESPUES de los tres bloques de SQL.
 export const MIGRATIONS: readonly Migration[] = [
   { id: '001_init', sql: initSql },
   { id: '002_audit_retention', sql: auditRetentionSql },
   { id: '003_audit_prune_fix', sql: auditPruneV2Sql },
   { id: '004_user_writes', sql: userWritesSql },
+  { id: '005_audit_prune_grant', sql: auditPruneGrantSql },
 ];
 
 /**

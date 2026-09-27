@@ -229,8 +229,11 @@ services:
       DATABASE_URL: postgres://securekey_api:${DATABASE_APP_PASSWORD:?falta DATABASE_APP_PASSWORD en el .env - ejecuta npm run secrets}@db:5432/${POSTGRES_DB:-securekey}
       DATABASE_APP_PASSWORD: "${DATABASE_APP_PASSWORD:?falta DATABASE_APP_PASSWORD en el .env - ejecuta npm run secrets}"
       # Solo los que leen el entorno; el resto sale con sus defaults.
-      AUDIT_KEEP_DAYS: ${AUDIT_KEEP_DAYS:-30}
-      AUDIT_MAX_ROWS: ${AUDIT_MAX_ROWS:-500000}
+      # 7 dias y 20 000 filas = ~2,5 MB medidos (128 bytes por fila con sus
+      # tres indices). Bajados a proposito: en una VPS de porfolio interesa no
+      # gastar memoria antes que conservar telemetria de meses.
+      AUDIT_KEEP_DAYS: ${AUDIT_KEEP_DAYS:-7}
+      AUDIT_MAX_ROWS: ${AUDIT_MAX_ROWS:-20000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       db:

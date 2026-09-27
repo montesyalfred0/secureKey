@@ -14,11 +14,41 @@
  */
 import { closeAllPools, getPool } from './pool.js';
 
-/** Dias que se conservan. Ajuste de despliegue, no de codigo. */
-const KEEP_DAYS = Number(process.env['AUDIT_KEEP_DAYS'] ?? 30);
+/**
+ * Lee un entero del entorno con defecto, sin caer en la trampa de `Number('')`.
+ *
+ * `AUDIT_KEEP_DAYS=` en el `.env` NO es lo mismo que no poner la variable: con
+ * `??`, el texto vacio pasa de largo y `Number('')` es `0`. Con 0 dias y 0
+ * filas, la primera pasada se lleva la bitacora entera. Comprobado: asi
+ * borraba las 60 filas que habia.
+ *
+ * Ademas, un valor absurdo (negativo o NaN) es un fallo de configuracion que no
+ * debe convertirse en "borra todo". Se cae al defecto y se avisa por stderr.
+ *
+ * Defectos: `AUDIT_KEEP_DAYS=7` (una semana basta para ver un ataque entero en
+ * una instancia de porfolio) y `AUDIT_MAX_ROWS=20000`.
+ *
+ * El tope de filas viene de una MEDIDA, no de una suposicion: 128 bytes por
+ * fila contando sus tres indices, o sea ~2,5 MB. Con el valor anterior de
+ * 500 000 eran ~64 MB. Al ritmo que impone el limite de tasa por IP, llegar a
+ * 20 000 filas lleva meses, asi que la cota dura solo entra en juego cuando
+ * alguien dispara el caudal, que es justo para lo que existe.
+ */
+function enteroDelEntorno(nombre: string, defecto: number): number {
+  const bruto = process.env[nombre];
+  if (bruto === undefined || bruto.trim() === '') return defecto;
+  const valor = Number(bruto);
+  if (!Number.isFinite(valor) || valor < 0) {
+    process.stderr.write(
+      `${nombre}="${bruto}" no es un numero valido; se usa el valor por defecto ${defecto}.\n`,
+    );
+    return defecto;
+  }
+  return valor;
+}
 
-/** Cota dura de filas. ~50 MB con los indices actuales. */
-const MAX_ROWS = Number(process.env['AUDIT_MAX_ROWS'] ?? 500_000);
+const KEEP_DAYS = enteroDelEntorno('AUDIT_KEEP_DAYS', 7);
+const MAX_ROWS = enteroDelEntorno('AUDIT_MAX_ROWS', 20_000);
 
 /** Espera maxima a que la base de datos este lista. */
 const WAIT_ATTEMPTS = 30;
@@ -47,6 +77,7 @@ async function waitForDatabase(): Promise<void> {
 }
 
 let removed: bigint;
+let fallo: string | null = null;
 
 try {
   await waitForDatabase();
@@ -59,12 +90,20 @@ try {
     `audit_log: ${removed} fila(s) borrada(s) (conservando ${KEEP_DAYS} dias, max ${MAX_ROWS} filas)\n`,
   );
 } catch (error) {
-  // Un fallo aqui NO debe tumbar el servicio ni el API: solo se queda sin
-  // podar esta pasada. Se avisa por stderr y se sale con codigo 0 para que el
-  // orquestador no entre en bucle de reinicios.
-  process.stderr.write(`No se pudo podar audit_log: ${error instanceof Error ? error.message : String(error)}\n`);
+  // Un fallo aqui no debe tumbar el API, y el script se ejecuta dentro de un
+  // bucle, asi que salir con exito evita un bucle de reinicios. Pero callarse
+  // sale mas caro: asi un `permission denied` permanente dejo meses la defensa
+  // muerta y el contenedor en "healthy", con una sola linea de log como unico
+  // rastro.
+  //
+  // Por eso se sale con codigo 1. En un `while true` el bucle sigue igual, pero
+  // el fallo queda a la vista en el log y en cualquier monitor que mire el
+  // codigo de salida. El coste de un reinicio era cero; el beneficio era
+  // invisible.
+  fallo = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`No se pudo podar audit_log: ${fallo}\n`);
 } finally {
   await closeAllPools();
 }
 
-process.exit(0);
+process.exit(fallo === null ? 0 : 1);
