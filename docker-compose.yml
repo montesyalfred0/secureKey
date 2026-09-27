@@ -36,6 +36,14 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
       target: runtime
+      # Commit que se graba DENTRO de la imagen. Sin este argumento la API
+      # arranca diciendo 'desconocido' y verificar-despliegue.sh no puede decir si lo
+      # que corre es lo que hay en el repositorio.
+      #
+      # Lo pone el despliegue:
+      #   APP_COMMIT=$(git rev-parse --short HEAD) docker compose ... build
+      args:
+        APP_COMMIT: ${APP_COMMIT:-desconocido}
     image: securekey/api:latest
     command: ["node", "apps/api/dist/db/migrate.js"]
     # OJO: las migraciones SI necesitan superusuario (CREATE ROLE, ALTER TABLE
@@ -86,6 +94,14 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
       target: runtime
+      # Commit que se graba DENTRO de la imagen. Sin este argumento la API
+      # arranca diciendo 'desconocido' y verificar-despliegue.sh no puede decir si lo
+      # que corre es lo que hay en el repositorio.
+      #
+      # Lo pone el despliegue:
+      #   APP_COMMIT=$(git rev-parse --short HEAD) docker compose ... build
+      args:
+        APP_COMMIT: ${APP_COMMIT:-desconocido}
     image: securekey/api:latest
     environment:
       <<: *admin_env
@@ -219,6 +235,14 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
       target: runtime
+      # Commit que se graba DENTRO de la imagen. Sin este argumento la API
+      # arranca diciendo 'desconocido' y verificar-despliegue.sh no puede decir si lo
+      # que corre es lo que hay en el repositorio.
+      #
+      # Lo pone el despliegue:
+      #   APP_COMMIT=$(git rev-parse --short HEAD) docker compose ... build
+      args:
+        APP_COMMIT: ${APP_COMMIT:-desconocido}
     image: securekey/api:latest
     command: ["sh", "-c", "while true; do node apps/api/dist/db/prune-audit.js; sleep 21600; done"]
     environment:

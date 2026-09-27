@@ -26,17 +26,31 @@ ssh root@62.171.157.89
 cd /opt/apps/securekey
 git pull
 
-docker compose -f docker-compose.yml -f docker-compose.prod.yml build api
+APP_COMMIT=$(git rev-parse --short HEAD) docker compose -f docker-compose.yml -f docker-compose.prod.yml build
 docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm migrate
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-Separado a proposito: `prune`, `migrate` y `api` comparten la etiqueta de
-imagen y compiten por ella, asi que un unico `up -d --build` puede levantar
-servicios de versiones distintas. Ver "Reconstruye la imagen en un paso" mas
-abajo.
+**`build` sin nombre de servicio, siempre.** Hay cinco servicios que salen del
+mismo codigo (`api`, `web`, `migrate`, `prune` y `caddy`) y `build <servicio>`
+solo reconstruye ese. Es la causa de un fallo que ya ha pasado: se reconstruyo
+`api`, la API llego nueva, el frontend se quedo con el bundle de ayer, y todo
+respondia 200 con el boton nuevo sin desplegar.
+
+El `APP_COMMIT` graba el commit **dentro de la imagen**, que es lo que permite
+comprobar despues que lo que corre es lo que hay en el repositorio.
 
 **3. Comprobar.** Desde la propia VPS:
+
+```bash
+bash scripts/verificar-despliegue.sh
+```
+
+Ese es el paso que no debe faltar. Compara el commit del repositorio con el de
+la imagen en marcha y con el que responde el sitio. Sale con codigo 1 si no
+coinciden.
+
+Ademas, a mano:
 
 ```bash
 curl -I https://securekey.yal99.com/            # 200, HSTS, CSP con wasm-unsafe-eval
@@ -81,16 +95,21 @@ cd /opt/apps/securekey && git log --oneline -1
 Si el hash no es el ultimo del portatil, el problema es ese, y nada de lo que
 hagas con Docker lo va a arreglar.
 
-**Reconstruye la imagen en un paso, no con `up --build`.** `prune`, `migrate` y
-`api` escriben en la misma etiqueta (`securekey/api:latest`). Con `up -d --build`
-los tres compiten por ella y el orden no esta garantizado, asi que puedes
-desplegar una migracion junto a un podador de otra version. En su lugar:
+**No uses `up -d --build`.** `prune`, `migrate` y `api` escriben todos en la
+misma etiqueta (`securekey/api:latest`) y compiten por ella, asi que el orden
+no esta garantizado y puedes levantar una migracion junto a un podador de otra
+version. Por eso el despliegue es `build` -> `run --rm migrate` -> `up -d`, con
+el `build` separado.
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml build api
-docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm migrate
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-```
+Y `npm run build` no sirve para desplegar: el `build` de Vite se ejecuta en el
+build de la imagen, no en el host. En la VPS no hay Node.
+
+**Nada de esto habria hecho falta con `verificar-despliegue.sh`.** Los tres
+fallos de este fichero ocurrieron porque no habia forma de detectar que lo que
+corria no era lo que habia en el repositorio. El comando salia en verde, el
+sitio respondia 200, y `docker compose ps` enseñaba todo en verde. El unico
+sintoma era que el cambio no estaba. Eso es lo peor que puede pasar con un
+despliegue: que no se vea.
 
 ---
 

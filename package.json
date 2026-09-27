@@ -28,6 +28,7 @@
     "backup": "bash scripts/backup.sh",
     "backup:verify": "bash scripts/backup-verify.sh",
     "backup:cron": "bash scripts/install-cron.sh",
+    "verificar:despliegue": "bash scripts/verificar-despliegue.sh",
     "restore": "bash scripts/restore.sh",
     "prune": "docker compose run --rm --no-deps -T prune node apps/api/dist/db/prune-audit.js",
     "up": "docker compose up --build -d --wait",

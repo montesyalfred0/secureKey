@@ -37,7 +37,17 @@ async function main(): Promise<void> {
 
   await app.listen({ host: config.host, port: config.port });
   app.log.info(
-    { port: config.port, env: config.nodeEnv, registration: config.registrationMode },
+    {
+      port: config.port,
+      env: config.nodeEnv,
+      registration: config.registrationMode,
+      // Que commit construyo ESTA imagen. Vive en el log y no en un endpoint a
+      // proposito: publicar el hash exacto por HTTP le dice a quien lo rastree
+      // que vulnerabilidades concretas aplican a esta instalacion. Con el log,
+      // la comprobacion la hace `verificar-despliegue.sh` desde el servidor, que
+      // es donde hace falta.
+      commit: process.env['APP_COMMIT'] ?? 'desconocido',
+    },
     'SecureKey API escuchando',
   );
 }

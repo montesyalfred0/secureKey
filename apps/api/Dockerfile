@@ -45,6 +45,22 @@ CMD ["npm", "run", "dev", "--workspace", "@securekey/api"]
 FROM node:${NODE_VERSION} AS runtime
 WORKDIR /app
 
+# Commit con el que se construyo ESTA imagen. Lo pasa el despliegue:
+#
+#   APP_COMMIT=$(git rev-parse --short HEAD) docker compose ... build
+#
+# Existe para poder responder a una pregunta que hasta ahora no tenia respuesta:
+# ¿lo que esta corriendo en el servidor es el codigo que hay en el
+# repositorio? Sin esto, un `build` de un solo servicio deja el resto de
+# imagenes con el codigo de ayer, todo responde 200 y no hay ni un sintoma.
+#
+# "desconocido" NO es un valor de relleno comodo: es lo que se queda si alguien
+# construye sin pasar el argumento, y `verificar-despliegue.sh` lo trata como
+# "no se puede comprobar", nunca como "todo bien". Fallar de forma desconocida es
+# honesto; inventar un valor seria mentir.
+ARG APP_COMMIT=desconocido
+ENV APP_COMMIT=${APP_COMMIT}
+
 ENV NODE_ENV=production \
     npm_config_update_notifier=false \
     npm_config_fund=false \
