@@ -28,6 +28,11 @@
 # ===========================================================================
 set -Eeuo pipefail
 
+# Un script cuya funcion es decirte si algo va mal NO PUEDE morir en silencio.
+# Esta trampa convierte cualquier salida inesperada en un mensaje con el motivo
+# y un codigo de error, en vez de dejar la pantalla vacia.
+trap 'echo ""; echo "ERROR: el script ha salido en la linea $LINENO sin avisar." >&2; exit 3' ERR
+
 PROYECTO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROYECTO"
 
@@ -38,14 +43,22 @@ aviso(){ echo "  AVISO $1"; }
 mal()  { FALLOS=$((FALLOS + 1)); echo "  FALLA $1"; }
 
 FALLOS=0
-fallar() { echo "ERROR: $*" >&2; exit 1; }
+fallar() { trap - ERR; echo "ERROR: $*" >&2; exit 1; }
 
 # --- 1. Que commit hay en el repositorio -----------------------------------
 
 [ -d .git ] || fallar "esto no parece un clon de git (falta .git)"
 ESPERADO="$(git rev-parse --short HEAD)"
-CAMBIOS_SIN_SUBIR="$(git status --porcelain | grep -v '^??' | wc -l | tr -d ' ')"
-SIN_SUBIR="$(git log --oneline "origin/main..HEAD" 2>/dev/null | wc -l | tr -d ' ' || echo 0)"
+
+# `grep -v '^??'` sale con CODIGO 1 cuando el arbol esta limpio, porque no
+# encuentra ninguna linea que conservar. Con `set -e` y `pipefail` eso aborta
+# el script entero ANTES del primer `echo`, y el script entero se queda en
+# blanco: sin un solo sintoma de nada. Es exactamente lo que pasó la primera
+# vez que se ejecutó, con el arbol recien hecho `git pull`.
+CAMBIOS_SIN_SUBIR="$(git status --porcelain | grep -v '^??' | wc -l | tr -d ' ' || true)"
+[ -z "$CAMBIOS_SIN_SUBIR" ] && CAMBIOS_SIN_SUBIR=0
+SIN_SUBIR="$(git log --oneline 'origin/main..HEAD' 2>/dev/null | wc -l | tr -d ' ' || true)"
+[ -z "$SIN_SUBIR" ] && SIN_SUBIR=0
 
 echo "Repositorio: $(pwd)"
 echo "  ESPERADO: $ESPERADO"
