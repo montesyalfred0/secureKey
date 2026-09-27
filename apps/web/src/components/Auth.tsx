@@ -11,24 +11,6 @@ import { Alert, Button, Field, Spinner } from './ui.js';
 import { cryptoAvailable } from '../lib/crypto.js';
 import { SecureKeyError, type SecureKeyStore } from '../state/session.js';
 
-/**
- * Esta instancia es una demo publica: cualquiera puede crear su cuenta.
- *
- * Ponerlo a `false`, o borrar los avisos enteros, en cuanto se despliegue en
- * serio. Entonces convendria ademas volver a `REGISTRATION_MODE=invite` en el
- * `.env`.
- *
- * El aviso NO dice "no guardes contrasenas porque este servidor las puede
- * leer", porque no puede: solo recibe texto cifrado y la derivada de la clave
- * maestra. Eso es lo que hace que la app sirva de algo, asi que el aviso
- * conviene que lo diga.
- *
- * Lo que si es cierto, y por lo que avisa, es que esto es temporal. Alguien que
- * guarde aqui su contrasena del correo y luego la demo desaparezca ha perdido
- * algo de lo que dependia. Ahi no hay cifrado que lo arregle.
- */
-const ES_DEMO_PUBLICA = true;
-
 function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <div class={['brand', compact ? 'brand--compact' : ''].filter(Boolean).join(' ')}>
@@ -86,7 +68,6 @@ export function AuthScreen({ store }: { store: SecureKeyStore }) {
   const [mail, setMail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [invite, setInvite] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
@@ -116,7 +97,7 @@ export function AuthScreen({ store }: { store: SecureKeyStore }) {
     setDone(true);
     try {
       if (isSignup) {
-        await store.signUp(mail, password, invite);
+        await store.signUp(mail, password);
       } else {
         await store.signIn(mail, password);
       }
@@ -138,13 +119,6 @@ export function AuthScreen({ store }: { store: SecureKeyStore }) {
           indescifrables: ni sus administradores ni un robo de la base de datos pueden leer lo que
           guardas.
         </p>
-        {ES_DEMO_PUBLICA && (
-          <p class="auth__lead">
-            <strong>Demo publica.</strong> El registro esta abierto. Lo que guardes llega cifrado y
-            el servidor no puede leerlo, pero esta demo puede desaparecer: no guardes nada de lo
-            que necesites.
-          </p>
-        )}
         <TrustPanel />
       </section>
 
@@ -165,14 +139,6 @@ export function AuthScreen({ store }: { store: SecureKeyStore }) {
             <Alert tone="danger" title="Contexto no seguro">
               Tu navegador no expone WebCrypto fuera de HTTPS o <code>localhost</code>. Abre la
               aplicacion mediante <code>https://localhost:8443</code>.
-            </Alert>
-          )}
-
-          {ES_DEMO_PUBLICA && (
-            <Alert tone="warn" title="Demo publica: no guardes nada que necesites">
-              Puedes crear tu cuenta y guardar lo que quieras: el servidor solo recibe texto
-              cifrado que no puede leer. Pero esto es una demo y puede desaparecer en cualquier
-              momento, asi que no guardes nada de lo que dependas.
             </Alert>
           )}
 
@@ -219,15 +185,6 @@ export function AuthScreen({ store }: { store: SecureKeyStore }) {
                   monospace
                   value={confirm}
                   onInput={(event) => setConfirm((event.currentTarget as HTMLInputElement).value)}
-                />
-                <Field
-                  label="Codigo de invitacion (opcional)"
-                  type="text"
-                  icon="wand"
-                  placeholder="solo si el administrador lo exige"
-                  monospace
-                  value={invite}
-                  onInput={(event) => setInvite((event.currentTarget as HTMLInputElement).value)}
                 />
               </>
             )}

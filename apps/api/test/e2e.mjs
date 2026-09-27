@@ -26,14 +26,17 @@
  * con codigo 2, en vez de mostrar veinte fallos en cascada (sesion no creada,
  * IDOR que no se puede comprobar) que no explican nada.
  *
- * NOTA sobre los limites de tasa: el registro esta limitado a 5 cuentas por
- * hora y por IP, y este script crea 3. Dos ejecuciones seguidas fallarian con
- * 429, y no es un fallo del producto sino del limite funcionando. El contador
- * vive en memoria del proceso, asi que
+ * NOTA sobre los limites de tasa: este script crea 3 cuentas, asi que necesita
+ * `RATE_LIMIT_REGISTER_MAX` de al menos 3. En produccion es 2 a proposito, y
+ * este script no se ejecuta ahi; en local hay que subirlo. Con el limite
+ * justo, dos ejecuciones seguidas fallan con 429, y eso es el limite
+ * funcionando, no un fallo del producto. El contador vive en memoria del
+ * proceso, asi que
  *
- *     docker compose restart api
+ *     docker compose up -d
  *
- * lo reinicia.
+ * lo reinicia (y hace falta reiniciar, no solo reiniciar la API, para que
+ * coja el valor nuevo del .env).
  */
 import { argon2id } from 'hash-wasm';
 import { createHmac } from 'node:crypto';
@@ -254,15 +257,21 @@ async function register(client, email, masterPassword) {
     );
   }
 
-  // El limite de registro es 5 por hora y por IP, y este script crea 3. Sin
-  // este aviso, el 429 se manifestaria como cinco fallos en cascada (sesion no
-  // creada, IDOR que no se puede comprobar) que no dicen nada del motivo real.
+  // Este script crea 3 cuentas, asi que necesita un limite de registro de al
+  // menos 3. En produccion el limite es 2 (a proposito: frena los registros
+  // automatizados), y en la VPS este script no se ejecuta. En local hay que
+  // subirlo o el 429 llega aqui.
+  //
+  // Sin este aviso, el 429 se manifestaria como cinco fallos en cascada (sesion
+  // no creada, IDOR que no se puede comprobar) que no dicen nada del motivo.
   if (res.status === 429) {
     bail(
-      '  >>> 429 en el REGISTRO: se ha alcanzado el limite de 5 cuentas por hora.\n' +
+      '  >>> 429 en el REGISTRO: el limite de registros por IP esta agotado.\n' +
+        '  >>> Este script crea 3 cuentas y necesita un limite de al menos 3.\n' +
         '  >>> El limite esta funcionando; no es un fallo del producto.\n' +
-        '  >>> Reinicia el contador con:  docker compose restart api\n' +
-        '  >>> y vuelve a ejecutar este script.',
+        '  >>> Para el entorno local: RATE_LIMIT_REGISTER_MAX=5 en el .env, y\n' +
+        '  >>> luego  docker compose up -d  (el contador vive en memoria del\n' +
+        '  >>> proceso, asi que reiniciar el contenedor tambien lo pone a cero).',
     );
   }
 

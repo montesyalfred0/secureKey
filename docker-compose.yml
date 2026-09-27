@@ -63,6 +63,9 @@ services:
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
       LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
       LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+      # Cuentas nuevas por IP y por hora. Sin esta linea la variable del .env
+      # no llegaba al contenedor y el limite era siempre el del codigo (2).
+      RATE_LIMIT_REGISTER_MAX: ${RATE_LIMIT_REGISTER_MAX:-2}
       ARGON2_MEMORY_KIB: ${ARGON2_MEMORY_KIB:-19456}
       ARGON2_ITERATIONS: ${ARGON2_ITERATIONS:-2}
       ARGON2_PARALLELISM: ${ARGON2_PARALLELISM:-1}
