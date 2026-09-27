@@ -312,10 +312,16 @@ function ItemForm({
   const [tab, setTab] = useState<FormMode>(mode);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Las notas van plegadas: en casi todas las credenciales el campo se queda
+  // vacio, y un area de texto siempre abierta solo hace el formulario mas alto.
+  // Si la credencial YA trae notas, se abre sola: ocultar contenido que el
+  // usuario escribio es peor que un formulario un poco mas largo.
+  const [notasAbiertas, setNotasAbiertas] = useState(false);
 
   useEffect(() => {
     if (open) {
       setForm(initial ?? emptyItem());
+      setNotasAbiertas((initial?.notes.length ?? 0) > 0);
       setTab(mode);
       setError(null);
     }
@@ -421,13 +427,26 @@ function ItemForm({
           )}
         </div>
 
-        <TextArea
-          label="Notas"
-          rows={3}
-          placeholder="Preguntas de seguridad, PIN, lugar de la tarjeta..."
-          value={form.notes}
-          onInput={(event) => patch('notes', (event.currentTarget as HTMLTextAreaElement).value)}
-        />
+        {notasAbiertas ? (
+          <TextArea
+            label="Notas"
+            rows={3}
+            placeholder="Respuesta de seguridad, PIN, codigos de recuperacion"
+            hint="Para lo que no es la contrasena: la respuesta de seguridad del banco, el PIN del cajero o los codigos de recuperacion del 2FA. Viaja cifrado como la contrasena."
+            value={form.notes}
+            onInput={(event) => patch('notes', (event.currentTarget as HTMLTextAreaElement).value)}
+          />
+        ) : (
+          <button
+            type="button"
+            class="form__more"
+            onClick={() => setNotasAbiertas(true)}
+            title="Anadir notas: respuestas de seguridad, PIN o codigos de recuperacion"
+          >
+            <Icon name="edit" size={14} />
+            Anadir notas
+          </button>
+        )}
 
         <label class="checkline">
           <input

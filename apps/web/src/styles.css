@@ -1896,6 +1896,41 @@ button {
   gap: var(--space-4);
 }
 
+/* Boton que abre un campo opcional plegado (hoy, las notas). Se alinea a la
+   izquierda del formulario, con el icono centrado en la linea de texto, y
+   adopta los colores apagados: es un campo que casi siempre se queda vacio. */
+.form__more {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  margin-top: calc(var(--space-3) * -1);
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  cursor: pointer;
+}
+
+.form__more svg {
+  flex: none;
+}
+
+.form__more:hover {
+  color: var(--accent);
+}
+
+.form__more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
 .settings {
   display: flex;
   flex-direction: column;
