@@ -129,6 +129,7 @@ export function Field({
   hint,
   error,
   icon,
+  type = 'text',
   revealable = false,
   copyable = false,
   monospace = false,
@@ -156,6 +157,14 @@ export function Field({
         {icon !== undefined && <Icon name={icon} class="field__icon" size={18} />}
         <input
           id={id}
+          // El boton del ojo tiene que cambiar el `type` DE VERDAD.
+          //
+          // Antes solo cambiaba el icono: el input seguia siendo
+          // `type="password"`, asi que pulsarlo no revelaba nada. Parecia un
+          // boton roto y llevaba asi desde el principio, en todos los campos
+          // con `revealable`: iniciar sesion, desbloquear la boveda, las tres
+          // del cambio de contrasena maestra y las de confirmacion.
+          type={revealed ? 'text' : type}
           class={['field__input', monospace ? 'is-mono' : '', icon === undefined ? 'is-plain' : '']
             .filter(Boolean)
             .join(' ')}
